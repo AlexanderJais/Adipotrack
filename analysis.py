@@ -13,6 +13,7 @@ Conventions
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass
 from io import BytesIO
@@ -20,6 +21,10 @@ from typing import IO
 
 import numpy as np
 import pandas as pd
+
+# Per-sample normalized-count column names look like "Cre_Q927" / "Wt_Q919".
+# Anchored on both ends so we don't match "Cre_Q927_count" or "Cre_Q927_fpkm".
+SAMPLE_COL_RE = re.compile(r"^(?:Cre|Wt)_Q\d+$", re.IGNORECASE)
 
 DEG_REQUIRED = ["gene_id", "gene_name", "log2FoldChange", "pvalue", "padj"]
 DEG_ANNOTATIONS = [
@@ -159,6 +164,175 @@ CLASS_COLORS = {
     "damping_down": "#56B4E9",  # sky blue
     "reversed":     "#999999",  # grey
 }
+
+
+def is_tf(df: pd.DataFrame) -> pd.Series:
+    """Boolean mask: gene has an annotated TF family (tf_family != '-')."""
+    if "tf_family" not in df.columns:
+        return pd.Series(False, index=df.index)
+    return df["tf_family"].astype(str).str.strip().ne("-") & df["tf_family"].notna()
+
+
+def _bh_adjust(pvals: np.ndarray) -> np.ndarray:
+    """Benjamini–Hochberg FDR adjustment."""
+    p = np.asarray(pvals, dtype=float)
+    n = p.size
+    if n == 0:
+        return p
+    order = np.argsort(p)
+    ranked = p[order]
+    bh = ranked * n / np.arange(1, n + 1)
+    bh = np.minimum.accumulate(bh[::-1])[::-1]
+    out = np.empty(n)
+    out[order] = np.minimum(bh, 1.0)
+    return out
+
+
+def tf_enrichment(
+    foreground: pd.DataFrame,
+    background: pd.DataFrame,
+    min_family_size: int = 3,
+) -> pd.DataFrame:
+    """Fisher's exact test: is each tf_family over-represented in `foreground`
+    compared to `background`?
+
+    Both inputs need a `tf_family` column. Returns a DataFrame sorted by
+    BH-adjusted q-value, with columns: tf_family, n_fg, n_fg_total,
+    n_bg, n_bg_total, odds_ratio, p_value, q_value.
+    """
+    if "tf_family" not in foreground.columns or "tf_family" not in background.columns:
+        return pd.DataFrame(columns=[
+            "tf_family", "n_fg", "n_fg_total", "n_bg", "n_bg_total",
+            "odds_ratio", "p_value", "q_value",
+        ])
+
+    try:
+        from scipy.stats import fisher_exact
+    except ImportError:
+        warnings.warn("scipy not installed; tf_enrichment returning empty result")
+        return pd.DataFrame()
+
+    fg = foreground[is_tf(foreground)].copy()
+    bg = background[is_tf(background)].copy()
+    fg_total = len(fg)
+    bg_total = len(bg)
+    families = (
+        fg["tf_family"].value_counts()
+        .loc[lambda s: s >= min_family_size]
+        .index.tolist()
+    )
+
+    rows = []
+    for fam in families:
+        a = int((fg["tf_family"] == fam).sum())
+        b = fg_total - a
+        c = int((bg["tf_family"] == fam).sum())
+        d = bg_total - c
+        # One-sided "greater" — we care about over-representation only.
+        try:
+            res = fisher_exact([[a, b], [c, d]], alternative="greater")
+            odds, p = float(res.statistic), float(res.pvalue)
+        except TypeError:
+            # scipy < 1.7 returns a tuple
+            odds, p = fisher_exact([[a, b], [c, d]], alternative="greater")
+        rows.append({
+            "tf_family": fam,
+            "n_fg": a, "n_fg_total": fg_total,
+            "n_bg": c, "n_bg_total": bg_total,
+            "odds_ratio": odds,
+            "p_value": p,
+        })
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out["q_value"] = _bh_adjust(out["p_value"].to_numpy())
+        out = out.sort_values("q_value").reset_index(drop=True)
+    return out
+
+
+# ---- Sample-level (replicate QC) -------------------------------------------
+
+@dataclass
+class SampleData:
+    """Per-sample normalized counts plus group metadata for one DEG file."""
+    expr: pd.DataFrame      # gene_name (index) × sample (columns)
+    metadata: pd.DataFrame  # columns: sample, group
+
+
+def load_samples(
+    source: str | IO[bytes],
+    group_a_label: str,
+    group_b_label: str,
+) -> SampleData:
+    """Load per-sample normalized-count columns from a DEG file.
+
+    Assumes the file lays out sample columns as [group_a × k, group_b × k]
+    in column order — which matches the convention in this dataset where
+    group-mean columns appear in the same order. Raises if the count of
+    detected sample columns isn't even.
+    """
+    raw = pd.read_csv(source, sep="\t", low_memory=False, encoding="utf-8-sig")
+    if "gene_name" not in raw.columns:
+        raise ValueError("Sample loader: missing gene_name column")
+    sample_cols = [c for c in raw.columns if SAMPLE_COL_RE.fullmatch(c)]
+    if not sample_cols:
+        raise ValueError("Sample loader: no per-sample columns matched (Cre|Wt)_Q###")
+    if len(sample_cols) % 2 != 0:
+        raise ValueError(
+            f"Sample loader: expected even sample column count, got {len(sample_cols)}"
+        )
+    half = len(sample_cols) // 2
+    expr = (
+        raw[["gene_name", *sample_cols]]
+        .dropna(subset=["gene_name"])
+        .drop_duplicates("gene_name", keep="first")
+        .set_index("gene_name")
+    )
+    expr = expr.apply(pd.to_numeric, errors="coerce")
+    metadata = pd.DataFrame({
+        "sample": sample_cols,
+        "group": [group_a_label] * half + [group_b_label] * half,
+    })
+    return SampleData(expr=expr, metadata=metadata)
+
+
+def compute_pca(
+    expr: pd.DataFrame,
+    n_top_var: int = 2000,
+    n_components: int = 2,
+    log_transform: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """PCA of samples on (optionally log-transformed) top-variance genes.
+
+    Returns (scores, var_explained) where scores has shape
+    (n_samples, n_components) and var_explained sums to ≤ 1.
+    """
+    X = expr.to_numpy(dtype=float)
+    X = np.where(np.isfinite(X), X, 0.0)
+    if log_transform:
+        X = np.log2(X + 1.0)
+    # genes × samples → variance per gene → keep top-variance rows
+    if X.shape[0] > n_top_var:
+        var = X.var(axis=1)
+        top = np.argsort(var)[-n_top_var:]
+        X = X[top]
+    # samples × genes for PCA
+    Xs = X.T
+    Xc = Xs - Xs.mean(axis=0)
+    U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
+    scores = Xc @ Vt[:n_components].T
+    total = float((S ** 2).sum())
+    var_explained = (S[:n_components] ** 2) / total if total > 0 else np.zeros(n_components)
+    return scores, var_explained
+
+
+def sample_correlation(expr: pd.DataFrame, method: str = "pearson") -> pd.DataFrame:
+    """Pairwise sample correlation on log2(x+1) counts."""
+    X = np.log2(expr.to_numpy(dtype=float) + 1.0)
+    df = pd.DataFrame(X, columns=expr.columns)
+    return df.corr(method=method)
+
+
+# ----------------------------------------------------------------------------
 
 
 def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:

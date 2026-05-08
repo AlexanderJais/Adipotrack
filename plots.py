@@ -331,6 +331,170 @@ def trajectory_lines(
     return fig
 
 
+def tf_lfc_panel(traj: pd.DataFrame, max_per_class: int = 12) -> plt.Figure:
+    """Horizontal LFC bars of TFs in the trajectory set, faceted by class.
+
+    Sign of the bar = direction at 4 h (canonical effect size).
+    """
+    apply_style()
+    if traj.empty or "tf_family" not in traj.columns:
+        fig, ax = plt.subplots(figsize=(3, 2))
+        ax.text(0.5, 0.5, "No TF annotations available",
+                ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    tfs = traj[traj["tf_family"].astype(str).str.strip().ne("-")
+               & traj["tf_family"].notna()].copy()
+    if tfs.empty:
+        fig, ax = plt.subplots(figsize=(3, 2))
+        ax.text(0.5, 0.5, "No TFs in the trajectory set",
+                ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    classes = [c for c in CLASS_ORDER if (tfs["class"] == c).any()]
+    n = len(classes)
+    fig, axes = plt.subplots(
+        1, n, figsize=(2.4 * n, 0.18 * max_per_class + 1.2), sharex=True,
+    )
+    if n == 1:
+        axes = [axes]
+
+    arr = np.concatenate([tfs["lfc_2h"].to_numpy(), tfs["lfc_4h"].to_numpy()])
+    x_lim = max(float(np.nanquantile(np.abs(arr), 0.99)) * 1.15, 1.0)
+
+    for ax, cls in zip(axes, classes):
+        sub = tfs[tfs["class"] == cls]
+        sub = sub.iloc[sub["lfc_4h"].abs().to_numpy().argsort()[::-1]].head(max_per_class)
+        # Plot in ascending LFC so largest bars sit at the top
+        sub = sub.iloc[sub["lfc_4h"].to_numpy().argsort()]
+        y = np.arange(len(sub))
+        ax.barh(y, sub["lfc_4h"], color=CLASS_COLORS[cls], height=0.7,
+                edgecolor="none")
+        # Annotate tf_family next to each bar's gene label
+        ax.set_yticks(y)
+        ax.set_yticklabels(
+            [f"{g}  · {fam}" for g, fam in zip(sub["gene_name"], sub["tf_family"])],
+            fontsize=5,
+        )
+        ax.axvline(0, color="black", lw=0.4)
+        ax.set_xlim(-x_lim, x_lim)
+        ax.set_xlabel("log$_2$FC at 4 h")
+        ax.set_title(f"{cls.replace('_', ' ')}\n(n = {len(sub)} of {(tfs['class'] == cls).sum()})")
+    fig.tight_layout()
+    return fig
+
+
+def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
+    """Dot plot of TF-family enrichment. Dot size = n_fg, colour = -log10 q."""
+    apply_style()
+    if enrichment.empty:
+        fig, ax = plt.subplots(figsize=(3, 2))
+        ax.text(0.5, 0.5, "No TF families pass the size filter",
+                ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    d = enrichment.head(top_n).copy()
+    d = d.iloc[::-1]  # so smallest q ends up at the top
+    d["log_or"] = np.log2(d["odds_ratio"].replace(0, np.nan))
+    d["mlog10q"] = -np.log10(d["q_value"].clip(lower=1e-300))
+
+    fig, ax = plt.subplots(figsize=(3.6, 0.22 * len(d) + 1.0))
+    sc = ax.scatter(
+        d["log_or"], np.arange(len(d)),
+        s=d["n_fg"] * 12 + 10,
+        c=d["mlog10q"], cmap="viridis",
+        edgecolor="black", linewidths=0.3,
+    )
+    ax.axvline(0, color="black", lw=0.3, ls="--")
+    ax.set_yticks(np.arange(len(d)))
+    ax.set_yticklabels(d["tf_family"], fontsize=6)
+    ax.set_xlabel("log$_2$ odds ratio (foreground vs background)")
+    ax.set_title(f"TF-family enrichment (top {len(d)})")
+
+    cbar = fig.colorbar(sc, ax=ax, fraction=0.04, pad=0.04)
+    cbar.set_label(r"$-\log_{10}\,q$", fontsize=6)
+    cbar.ax.tick_params(labelsize=5)
+    cbar.outline.set_linewidth(0.4)
+
+    # Size legend
+    handles = []
+    for k in (1, 5, 10):
+        handles.append(plt.scatter([], [], s=k * 12 + 10,
+                                   facecolor="white", edgecolor="black",
+                                   linewidths=0.3, label=str(k)))
+    ax.legend(handles=handles, title="n in foreground",
+              loc="lower right", bbox_to_anchor=(1.02, -0.02),
+              fontsize=5, title_fontsize=6, labelspacing=0.6,
+              borderpad=0.4, handletextpad=0.4)
+    fig.tight_layout()
+    return fig
+
+
+# ---- Replicate QC ----------------------------------------------------------
+
+def pca_scatter(
+    scores: np.ndarray,
+    var_explained: np.ndarray,
+    metadata: pd.DataFrame,
+    title: str,
+) -> plt.Figure:
+    """PC1 vs PC2 coloured by group, sample IDs annotated."""
+    apply_style()
+    fig, ax = plt.subplots(figsize=(3.4, 3.0))
+    groups = metadata["group"].unique().tolist()
+    palette = ["#D55E00", "#0072B2", "#009E73", "#CC79A7", "#56B4E9"]
+    for i, grp in enumerate(groups):
+        mask = (metadata["group"] == grp).to_numpy()
+        ax.scatter(scores[mask, 0], scores[mask, 1],
+                   s=24, c=palette[i % len(palette)], alpha=0.9,
+                   edgecolor="black", linewidths=0.3, label=grp)
+    for (x, y), name in zip(scores[:, :2], metadata["sample"]):
+        ax.annotate(name, (x, y), fontsize=4.5, xytext=(3, 3),
+                    textcoords="offset points")
+    ax.axhline(0, color="black", lw=0.3, alpha=0.5)
+    ax.axvline(0, color="black", lw=0.3, alpha=0.5)
+    ax.set_xlabel(f"PC1 ({var_explained[0] * 100:.1f}%)")
+    ax.set_ylabel(f"PC2 ({var_explained[1] * 100:.1f}%)" if len(var_explained) > 1
+                  else "PC2")
+    ax.set_title(title)
+    ax.legend(loc="best", fontsize=5)
+    fig.tight_layout()
+    return fig
+
+
+def sample_corr_heatmap(corr: pd.DataFrame, metadata: pd.DataFrame,
+                        title: str) -> plt.Figure:
+    """Pairwise correlation heatmap of samples with group labels."""
+    apply_style()
+    n = len(corr)
+    fig, ax = plt.subplots(figsize=(0.32 * n + 1.6, 0.32 * n + 1.4))
+    im = ax.imshow(corr.to_numpy(), vmin=corr.to_numpy().min(),
+                   vmax=1.0, cmap="magma", interpolation="nearest")
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(corr.columns, rotation=90, fontsize=5)
+    ax.set_yticklabels(corr.index, fontsize=5)
+    ax.tick_params(left=False, bottom=False)
+
+    # Group separator lines based on metadata order
+    group_order = metadata.set_index("sample").loc[corr.columns, "group"].tolist()
+    boundaries = [i for i in range(1, n) if group_order[i] != group_order[i - 1]]
+    for b in boundaries:
+        ax.axhline(b - 0.5, color="white", lw=1.0)
+        ax.axvline(b - 0.5, color="white", lw=1.0)
+
+    ax.set_title(title)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.04)
+    cbar.set_label("Pearson r", fontsize=6)
+    cbar.ax.tick_params(labelsize=5)
+    cbar.outline.set_linewidth(0.4)
+    fig.tight_layout()
+    return fig
+
+
 def _stack_labels(texts, ax, min_gap: float) -> None:
     """Greedy vertical-stacking fallback if adjustText isn't available."""
     items = sorted(

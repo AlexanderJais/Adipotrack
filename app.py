@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import warnings
 
+import pandas as pd
 import streamlit as st
 
 from analysis import (
     CLASS_ORDER,
     TimepointInputs,
+    compute_pca,
     consensus_at_timepoint,
+    is_tf,
     load_deg,
+    load_samples,
+    sample_correlation,
     sig_set,
+    tf_enrichment,
     to_excel_bytes,
     trajectories,
 )
@@ -23,6 +29,10 @@ from plots import (
     fig_to_bytes,
     heatmap,
     lfc_scatter,
+    pca_scatter,
+    sample_corr_heatmap,
+    tf_enrichment_dot,
+    tf_lfc_panel,
     trajectory_lines,
     venn4,
     volcano,
@@ -94,9 +104,13 @@ c2.metric("Consensus @ 4 h", len(cons_4h))
 c3.metric("Trajectory genes (2h ∩ 4h)", len(traj))
 c4.metric("Reversed direction", int((traj["class"] == "reversed").sum()))
 
-tab_overview, tab_volcano, tab_overlap, tab_traj, tab_heatmap, tab_table = st.tabs(
-    ["Overview", "Volcanoes", "Overlap", "Trajectories", "Heatmap", "Tables"]
-)
+(
+    tab_overview, tab_volcano, tab_overlap, tab_traj,
+    tab_heatmap, tab_tfs, tab_qc, tab_table,
+) = st.tabs([
+    "Overview", "Volcanoes", "Overlap", "Trajectories",
+    "Heatmap", "TFs", "QC", "Tables",
+])
 
 with tab_overview:
     st.markdown(
@@ -182,6 +196,87 @@ with tab_heatmap:
         st.pyplot(fig, use_container_width=False)
         st.download_button("Heatmap PDF", fig_to_bytes(fig, "pdf"),
                            file_name="heatmap.pdf", mime="application/pdf")
+
+with tab_tfs:
+    if traj.empty:
+        st.warning("No consensus genes — TF panel needs trajectory genes.")
+    else:
+        # Background = union of all genes that were tested in the four DEG files.
+        bg_union = pd.concat(
+            [deg_2h_g, deg_2h_v, deg_4h_g, deg_4h_v],
+            ignore_index=True,
+        ).drop_duplicates("gene_name")
+        n_tf_traj = int(is_tf(traj).sum())
+        n_tf_bg = int(is_tf(bg_union).sum())
+        st.caption(
+            f"{n_tf_traj} TF(s) in the trajectory set out of {len(traj)} genes "
+            f"({n_tf_traj / max(len(traj), 1):.1%}); "
+            f"background pool: {n_tf_bg} TFs in {len(bg_union)} genes "
+            f"({n_tf_bg / max(len(bg_union), 1):.1%})."
+        )
+
+        col1, col2 = st.columns([1.1, 1])
+        f_tf = tf_lfc_panel(traj)
+        col1.pyplot(f_tf, use_container_width=True)
+        col1.download_button("TF panel PDF", fig_to_bytes(f_tf, "pdf"),
+                             file_name="tf_panel.pdf",
+                             mime="application/pdf")
+
+        enr = tf_enrichment(traj, bg_union, min_family_size=3)
+        if enr.empty:
+            col2.info("No TF families pass the size filter (≥3 in foreground).")
+        else:
+            f_enr = tf_enrichment_dot(enr)
+            col2.pyplot(f_enr, use_container_width=True)
+            col2.download_button("TF enrichment PDF", fig_to_bytes(f_enr, "pdf"),
+                                 file_name="tf_enrichment.pdf",
+                                 mime="application/pdf")
+            col2.dataframe(enr.round(4), use_container_width=True, height=240)
+
+with tab_qc:
+    @st.cache_data(show_spinner=False)
+    def _load_samples_cached(file_bytes: bytes, _key: str,
+                             a_label: str, b_label: str):
+        from io import BytesIO
+        return load_samples(BytesIO(file_bytes), a_label, b_label)
+
+    qc_files = [
+        ("2 h: CRE+CNO vs WT+CNO",  f_2h_g, "CRE+CNO_2h", "WT+CNO_2h"),
+        ("2 h: CRE+CNO vs CRE+SAL", f_2h_v, "CRE+CNO_2h", "CRE+SAL_2h"),
+        ("4 h: CRE+CNO vs WT+CNO",  f_4h_g, "CRE+CNO_4h", "WT+CNO_4h"),
+        ("4 h: CRE+CNO vs CRE+SAL", f_4h_v, "CRE+CNO_4h", "CRE+SAL_4h"),
+    ]
+    qc_subtabs = st.tabs([t[0] for t in qc_files])
+    for sub, (label, fobj, a_lbl, b_lbl) in zip(qc_subtabs, qc_files):
+        with sub:
+            try:
+                sd = _load_samples_cached(fobj.getvalue(), fobj.name,
+                                          a_lbl, b_lbl)
+            except Exception as e:
+                st.error(f"Sample loading failed for {label}: {e}")
+                continue
+            scores, var_exp = compute_pca(sd.expr)
+            corr = sample_correlation(sd.expr)
+
+            cA, cB = st.columns(2)
+            f_pca = pca_scatter(scores, var_exp, sd.metadata,
+                                title=f"PCA · {label}")
+            cA.pyplot(f_pca, use_container_width=True)
+            cA.download_button(
+                "PCA PDF", fig_to_bytes(f_pca, "pdf"),
+                file_name=f"pca_{label.replace(' ', '_').replace(':', '')}.pdf",
+                mime="application/pdf",
+                key=f"pca_{label}",
+            )
+            f_corr = sample_corr_heatmap(corr, sd.metadata,
+                                         title=f"Sample correlation · {label}")
+            cB.pyplot(f_corr, use_container_width=True)
+            cB.download_button(
+                "Correlation PDF", fig_to_bytes(f_corr, "pdf"),
+                file_name=f"corr_{label.replace(' ', '_').replace(':', '')}.pdf",
+                mime="application/pdf",
+                key=f"corr_{label}",
+            )
 
 with tab_table:
     st.subheader("Consensus @ 2 h")
