@@ -220,11 +220,8 @@ def trajectory_lines(
     """One line per gene from 2 h to 4 h, faceted by class.
 
     Each panel reserves a right-hand label gutter (x = 1.0 → 1.6) so labels
-    can be repelled outward without colliding with the trajectories. The
-    per-class median is drawn on top with a white halo for visibility.
+    can be repelled outward without colliding with the trajectories.
     """
-    import matplotlib.patheffects as pe
-
     apply_style()
     classes = [c for c in CLASS_ORDER if (traj["class"] == c).any()]
     n = len(classes)
@@ -261,20 +258,6 @@ def trajectory_lines(
             ax.plot([0, 1], [r["lfc_2h"], r["lfc_4h"]],
                     color=CLASS_COLORS[cls], lw=0.5, alpha=0.45,
                     zorder=2)
-
-        # Median trajectory with white halo
-        if len(sub) >= 3:
-            med = [sub["lfc_2h"].median(), sub["lfc_4h"].median()]
-            (line,) = ax.plot(
-                [0, 1], med, color="black", lw=1.6,
-                marker="o", markersize=4,
-                markerfacecolor="white", markeredgewidth=0.8,
-                zorder=5,
-            )
-            line.set_path_effects([
-                pe.Stroke(linewidth=3.0, foreground="white"),
-                pe.Normal(),
-            ])
 
         ax.axhline(0, color="black", lw=0.3, zorder=1)
         ax.set_xticks([0, 1])
