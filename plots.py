@@ -41,9 +41,14 @@ def apply_style() -> None:
     })
 
 
-def fig_to_bytes(fig: plt.Figure, fmt: str = "pdf") -> bytes:
+def fig_to_bytes(fig: plt.Figure, fmt: str = "pdf", close: bool = True) -> bytes:
+    """Render ``fig`` to bytes; closes it by default to avoid leaks across
+    Streamlit reruns. Pass ``close=False`` if you need to keep using the
+    figure (e.g. for a follow-up ``st.pyplot`` call)."""
     buf = BytesIO()
     fig.savefig(buf, format=fmt, bbox_inches="tight")
+    if close:
+        plt.close(fig)
     return buf.getvalue()
 
 
@@ -544,8 +549,9 @@ def _stack_labels(texts, ax, min_gap: float) -> None:
         last_y = new_y
 
 
-def venn4(sets: dict[str, set[str]], max_rows: int = 20) -> plt.Figure:
-    """Approximate N-way overlap via UpSet-style bar chart (Venn4 is unreadable).
+def upset_plot(sets: dict[str, set[str]], max_rows: int = 20) -> plt.Figure:
+    """N-way overlap rendered as an UpSet-style bar chart (a 4-way Venn is
+    unreadable).
 
     The all-N intersection is always pinned at the front so it's never dropped
     by the size cap; remaining cells follow in size-descending order.

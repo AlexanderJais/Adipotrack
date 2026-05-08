@@ -33,7 +33,6 @@ SAMPLE_COL_PATTERNS = (
     re.compile(r"^(?:Cre|Wt)_Q\d+$", re.IGNORECASE),
     re.compile(r"^[A-Za-z]+\d+_[A-Za-z]+\d+$"),
 )
-SAMPLE_COL_RE = SAMPLE_COL_PATTERNS[0]  # kept for backwards compat
 
 DEG_REQUIRED = ["gene_id", "gene_name", "log2FoldChange", "pvalue", "padj"]
 DEG_ANNOTATIONS = [
@@ -42,8 +41,35 @@ DEG_ANNOTATIONS = [
 ]
 
 
+def _peek_magic(source: str | IO[bytes], n: int = 8) -> bytes:
+    """Read the first ``n`` bytes from ``source`` without disturbing position."""
+    if hasattr(source, "read") and hasattr(source, "seek"):
+        head = source.read(n)
+        source.seek(0)
+        return head
+    if isinstance(source, (str, bytes)):
+        try:
+            with open(source, "rb") as f:
+                return f.read(n)
+        except OSError:
+            return b""
+    return b""
+
+
 def load_deg(source: str | IO[bytes]) -> pd.DataFrame:
     """Load a DESeq2 DEG table (tab-separated, .xls extension is misleading)."""
+    head = _peek_magic(source)
+    if head.startswith(b"\xd0\xcf\x11\xe0"):
+        raise ValueError(
+            "DEG file looks like a real binary Excel workbook (.xls), not "
+            "the tab-separated text we expect. Re-export from the upstream "
+            "pipeline as TSV."
+        )
+    if head.startswith(b"PK\x03\x04"):
+        raise ValueError(
+            "DEG file looks like a binary .xlsx workbook, not the tab-"
+            "separated text we expect. Re-export as TSV."
+        )
     df = pd.read_csv(source, sep="\t", low_memory=False, encoding="utf-8-sig")
     missing = [c for c in DEG_REQUIRED if c not in df.columns]
     if missing:
@@ -197,6 +223,12 @@ def _bh_adjust(pvals: np.ndarray) -> np.ndarray:
     return out
 
 
+_TF_ENRICHMENT_COLS = [
+    "tf_family", "n_fg", "n_fg_total", "n_bg", "n_bg_total",
+    "odds_ratio", "p_value", "q_value",
+]
+
+
 def tf_enrichment(
     foreground: pd.DataFrame,
     background: pd.DataFrame,
@@ -207,19 +239,17 @@ def tf_enrichment(
 
     Both inputs need a `tf_family` column. Returns a DataFrame sorted by
     BH-adjusted q-value, with columns: tf_family, n_fg, n_fg_total,
-    n_bg, n_bg_total, odds_ratio, p_value, q_value.
+    n_bg, n_bg_total, odds_ratio, p_value, q_value. Always carries the same
+    column schema, even when no families pass the size filter.
     """
     if "tf_family" not in foreground.columns or "tf_family" not in background.columns:
-        return pd.DataFrame(columns=[
-            "tf_family", "n_fg", "n_fg_total", "n_bg", "n_bg_total",
-            "odds_ratio", "p_value", "q_value",
-        ])
+        return pd.DataFrame(columns=_TF_ENRICHMENT_COLS)
 
     try:
         from scipy.stats import fisher_exact
     except ImportError:
         warnings.warn("scipy not installed; tf_enrichment returning empty result")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=_TF_ENRICHMENT_COLS)
 
     # Background of TFs that are NOT in the foreground. Foreground is a
     # subset of the union of tested genes, so leaving it in the background
@@ -253,11 +283,11 @@ def tf_enrichment(
             "odds_ratio": odds,
             "p_value": p,
         })
+    if not rows:
+        return pd.DataFrame(columns=_TF_ENRICHMENT_COLS)
     out = pd.DataFrame(rows)
-    if not out.empty:
-        out["q_value"] = _bh_adjust(out["p_value"].to_numpy())
-        out = out.sort_values("q_value").reset_index(drop=True)
-    return out
+    out["q_value"] = _bh_adjust(out["p_value"].to_numpy())
+    return out.sort_values("q_value").reset_index(drop=True)
 
 
 # ---- Sample-level (replicate QC) -------------------------------------------
@@ -378,7 +408,11 @@ def compute_pca(
     """PCA of samples on (optionally log-transformed) top-variance genes.
 
     Returns (scores, var_explained) where scores has shape
-    (n_samples, n_components) and var_explained sums to ≤ 1.
+    (n_samples, n_components) and var_explained sums to ≤ 1. Note that
+    `var_explained` is the fraction *of variance among the genes used*
+    (post top-variance filtering), not of the full transcriptome — this is
+    the standard QC reading but worth keeping in mind when comparing across
+    runs with different gene-count thresholds.
     """
     X = expr.to_numpy(dtype=float)
     # Drop genes with any non-finite value rather than imputing zero — a
@@ -422,6 +456,17 @@ def sample_correlation(expr: pd.DataFrame, method: str = "pearson") -> pd.DataFr
 
 
 def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
+    # Excel caps sheet names at 31 chars. Detect collisions before writing
+    # so a longer-named sheet can't silently overwrite an earlier one.
+    seen: dict[str, str] = {}
+    for name in sheets:
+        truncated = name[:31]
+        if truncated in seen:
+            raise ValueError(
+                f"Sheet name collision after 31-char truncation: "
+                f"{seen[truncated]!r} and {name!r} both become {truncated!r}"
+            )
+        seen[truncated] = name
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         for name, df in sheets.items():

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import warnings
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
@@ -35,7 +36,7 @@ from plots import (
     tf_enrichment_dot,
     tf_lfc_panel,
     trajectory_lines,
-    venn4,
+    upset_plot,
     volcano,
 )
 
@@ -141,20 +142,20 @@ tf_enrichment_df = (
 )
 
 funnel_rows = []
-for _label, _df in [
+for label, df in [
     ("2 h: vs WT",  deg_2h_g),
     ("2 h: vs SAL", deg_2h_v),
     ("4 h: vs WT",  deg_4h_g),
     ("4 h: vs SAL", deg_4h_v),
 ]:
-    _sig_mask = (_df["padj"] < padj_thresh) & (_df["log2FoldChange"].abs() >= lfc_thresh)
-    _sig = _df[_sig_mask]
+    sig_mask = (df["padj"] < padj_thresh) & (df["log2FoldChange"].abs() >= lfc_thresh)
+    sig = df[sig_mask]
     funnel_rows.append({
-        "comparison": _label,
-        "tested": len(_df),
-        "significant": int(_sig_mask.sum()),
-        "up": int((_sig["log2FoldChange"] > 0).sum()),
-        "down": int((_sig["log2FoldChange"] < 0).sum()),
+        "comparison": label,
+        "tested": len(df),
+        "significant": int(sig_mask.sum()),
+        "up": int((sig["log2FoldChange"] > 0).sum()),
+        "down": int((sig["log2FoldChange"] < 0).sum()),
     })
 funnel = pd.DataFrame(funnel_rows)
 class_counts_series = (
@@ -188,11 +189,11 @@ with tab_overview:
         5. Effect size for plots = log₂FC from CRE+CNO vs CRE+SAL (direct chemogenetic).
         """
     )
-    cA, cB = st.columns([1.4, 1])
-    cA.subheader("Per-comparison significance funnel")
-    cA.dataframe(funnel, use_container_width=True, hide_index=True)
-    cB.subheader("Trajectory class counts")
-    cB.dataframe(class_counts_series.rename("genes").to_frame(),
+    c1, c2 = st.columns([1.4, 1])
+    c1.subheader("Per-comparison significance funnel")
+    c1.dataframe(funnel, use_container_width=True, hide_index=True)
+    c2.subheader("Trajectory class counts")
+    c2.dataframe(class_counts_series.rename("genes").to_frame(),
                  use_container_width=False)
 
 with tab_volcano:
@@ -209,6 +210,7 @@ with tab_volcano:
         fig = volcano(df, title, highlight=highlight_set,
                       padj_thresh=padj_thresh, lfc_thresh=lfc_thresh)
         cols[i % 2].pyplot(fig, use_container_width=True)
+        plt.close(fig)
         pdf_bytes = _volcano_pdf(
             fobj.getvalue(), fobj.name,
             float(padj_thresh), float(lfc_thresh),
@@ -227,7 +229,7 @@ with tab_overlap:
         "4h vs WT":  sig_set(deg_4h_g, padj_thresh),
         "4h vs SAL": sig_set(deg_4h_v, padj_thresh),
     }
-    fig = venn4(sets)
+    fig = upset_plot(sets)
     st.pyplot(fig, use_container_width=False)
     st.download_button("Download UpSet PDF", fig_to_bytes(fig, "pdf"),
                        file_name="upset.pdf", mime="application/pdf")
@@ -236,15 +238,15 @@ with tab_traj:
     if traj.empty:
         st.warning("No genes are consensus at both timepoints with current thresholds.")
     else:
-        col1, col2 = st.columns([1, 1])
+        c1, c2 = st.columns([1, 1])
         f1 = lfc_scatter(traj)
-        col1.pyplot(f1, use_container_width=True)
-        col1.download_button("Scatter PDF", fig_to_bytes(f1, "pdf"),
-                             file_name="lfc_scatter.pdf", mime="application/pdf")
+        c1.pyplot(f1, use_container_width=True)
+        c1.download_button("Scatter PDF", fig_to_bytes(f1, "pdf"),
+                           file_name="lfc_scatter.pdf", mime="application/pdf")
         f2 = trajectory_lines(traj)
-        col2.pyplot(f2, use_container_width=True)
-        col2.download_button("Trajectories PDF", fig_to_bytes(f2, "pdf"),
-                             file_name="trajectories.pdf", mime="application/pdf")
+        c2.pyplot(f2, use_container_width=True)
+        c2.download_button("Trajectories PDF", fig_to_bytes(f2, "pdf"),
+                           file_name="trajectories.pdf", mime="application/pdf")
 
 with tab_heatmap:
     if traj.empty:
@@ -278,23 +280,23 @@ with tab_tfs:
             f"({n_tf_bg / max(len(bg_union), 1):.1%})."
         )
 
-        col1, col2 = st.columns([1.1, 1])
+        c1, c2 = st.columns([1.1, 1])
         f_tf = tf_lfc_panel(traj)
-        col1.pyplot(f_tf, use_container_width=True)
-        col1.download_button("TF panel PDF", fig_to_bytes(f_tf, "pdf"),
-                             file_name="tf_panel.pdf",
-                             mime="application/pdf")
+        c1.pyplot(f_tf, use_container_width=True)
+        c1.download_button("TF panel PDF", fig_to_bytes(f_tf, "pdf"),
+                           file_name="tf_panel.pdf",
+                           mime="application/pdf")
 
         if tf_enrichment_df.empty:
-            col2.info("No TF families pass the size filter (≥3 in foreground).")
+            c2.info("No TF families pass the size filter (≥3 in foreground).")
         else:
             f_enr = tf_enrichment_dot(tf_enrichment_df)
-            col2.pyplot(f_enr, use_container_width=True)
-            col2.download_button("TF enrichment PDF", fig_to_bytes(f_enr, "pdf"),
-                                 file_name="tf_enrichment.pdf",
-                                 mime="application/pdf")
-            col2.dataframe(tf_enrichment_df.round(4),
-                           use_container_width=True, height=240)
+            c2.pyplot(f_enr, use_container_width=True)
+            c2.download_button("TF enrichment PDF", fig_to_bytes(f_enr, "pdf"),
+                               file_name="tf_enrichment.pdf",
+                               mime="application/pdf")
+            c2.dataframe(tf_enrichment_df.round(4),
+                         use_container_width=True, height=240)
 
 with tab_qc:
     qc_files = [
@@ -314,11 +316,11 @@ with tab_qc:
                 st.error(f"Sample loading failed for {label}: {e}")
                 continue
 
-            cA, cB = st.columns(2)
+            c1, c2 = st.columns(2)
             f_pca = pca_scatter(scores, var_exp, metadata,
                                 title=f"PCA · {label}")
-            cA.pyplot(f_pca, use_container_width=True)
-            cA.download_button(
+            c1.pyplot(f_pca, use_container_width=True)
+            c1.download_button(
                 "PCA PDF", fig_to_bytes(f_pca, "pdf"),
                 file_name=f"pca_{label.replace(' ', '_').replace(':', '')}.pdf",
                 mime="application/pdf",
@@ -326,8 +328,8 @@ with tab_qc:
             )
             f_corr = sample_corr_heatmap(corr, metadata,
                                          title=f"Sample correlation · {label}")
-            cB.pyplot(f_corr, use_container_width=True)
-            cB.download_button(
+            c2.pyplot(f_corr, use_container_width=True)
+            c2.download_button(
                 "Correlation PDF", fig_to_bytes(f_corr, "pdf"),
                 file_name=f"corr_{label.replace(' ', '_').replace(':', '')}.pdf",
                 mime="application/pdf",
@@ -369,7 +371,7 @@ debug_text = build_log(
         "consensus_2h": len(cons_2h),
         "consensus_4h": len(cons_4h),
         "trajectory": len(traj),
-        "reversed": int((traj["class"] == "reversed").sum()) if not traj.empty else 0,
+        "reversed": int((traj["class"] == "reversed").sum()),
         "bg_union": len(bg_union),
         "tf_enrichment_rows": len(tf_enrichment_df),
     },

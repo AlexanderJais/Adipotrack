@@ -98,11 +98,11 @@ def build_log(
         w("  <empty>")
     w()
 
-    w("## TF enrichment (top 25 by p-value)")
+    w("## TF enrichment (top 25 by q-value)")
     if tf_enrichment is not None and not tf_enrichment.empty:
         df = tf_enrichment.copy()
         sort_col = next(
-            (c for c in ("padj", "pvalue", "p_value", "p") if c in df.columns),
+            (c for c in ("q_value", "qvalue", "padj") if c in df.columns),
             None,
         )
         if sort_col:
