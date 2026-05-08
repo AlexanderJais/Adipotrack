@@ -11,6 +11,7 @@ import warnings
 import pandas as pd
 import streamlit as st
 
+from debug_log import build_log
 from analysis import (
     CLASS_ORDER,
     TimepointInputs,
@@ -139,6 +140,27 @@ tf_enrichment_df = (
     tf_enrichment(traj, bg_union, min_family_size=3) if not traj.empty else pd.DataFrame()
 )
 
+funnel_rows = []
+for _label, _df in [
+    ("2 h: vs WT",  deg_2h_g),
+    ("2 h: vs SAL", deg_2h_v),
+    ("4 h: vs WT",  deg_4h_g),
+    ("4 h: vs SAL", deg_4h_v),
+]:
+    _sig_mask = (_df["padj"] < padj_thresh) & (_df["log2FoldChange"].abs() >= lfc_thresh)
+    _sig = _df[_sig_mask]
+    funnel_rows.append({
+        "comparison": _label,
+        "tested": len(_df),
+        "significant": int(_sig_mask.sum()),
+        "up": int((_sig["log2FoldChange"] > 0).sum()),
+        "down": int((_sig["log2FoldChange"] < 0).sum()),
+    })
+funnel = pd.DataFrame(funnel_rows)
+class_counts_series = (
+    traj["class"].value_counts().reindex(CLASS_ORDER, fill_value=0)
+)
+
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Consensus @ 2 h", len(cons_2h))
 c2.metric("Consensus @ 4 h", len(cons_4h))
@@ -166,36 +188,12 @@ with tab_overview:
         5. Effect size for plots = log₂FC from CRE+CNO vs CRE+SAL (direct chemogenetic).
         """
     )
-    counts = (
-        traj["class"].value_counts()
-        .reindex(CLASS_ORDER, fill_value=0)
-        .rename("genes")
-        .to_frame()
-    )
-
-    funnel_rows = []
-    for label, df in [
-        ("2 h: vs WT",  deg_2h_g),
-        ("2 h: vs SAL", deg_2h_v),
-        ("4 h: vs WT",  deg_4h_g),
-        ("4 h: vs SAL", deg_4h_v),
-    ]:
-        sig_mask = (df["padj"] < padj_thresh) & (df["log2FoldChange"].abs() >= lfc_thresh)
-        sig = df[sig_mask]
-        funnel_rows.append({
-            "comparison": label,
-            "tested": len(df),
-            "significant": int(sig_mask.sum()),
-            "up": int((sig["log2FoldChange"] > 0).sum()),
-            "down": int((sig["log2FoldChange"] < 0).sum()),
-        })
-    funnel = pd.DataFrame(funnel_rows)
-
     cA, cB = st.columns([1.4, 1])
     cA.subheader("Per-comparison significance funnel")
     cA.dataframe(funnel, use_container_width=True, hide_index=True)
     cB.subheader("Trajectory class counts")
-    cB.dataframe(counts, use_container_width=False)
+    cB.dataframe(class_counts_series.rename("genes").to_frame(),
+                 use_container_width=False)
 
 with tab_volcano:
     panels = [
@@ -357,3 +355,34 @@ with tab_table:
         file_name="consensus_degs.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+file_inputs = {
+    "2 h genetic": f_2h_g, "2 h vehicle": f_2h_v,
+    "4 h genetic": f_4h_g, "4 h vehicle": f_4h_v,
+}
+load_warnings = {label: msgs for label, (_, msgs) in loaded.items()}
+debug_text = build_log(
+    thresholds={"padj <": padj_thresh, "|log2FC| >=": lfc_thresh},
+    files=file_inputs,
+    load_warnings=load_warnings,
+    counts={
+        "consensus_2h": len(cons_2h),
+        "consensus_4h": len(cons_4h),
+        "trajectory": len(traj),
+        "reversed": int((traj["class"] == "reversed").sum()) if not traj.empty else 0,
+        "bg_union": len(bg_union),
+        "tf_enrichment_rows": len(tf_enrichment_df),
+    },
+    funnel=funnel,
+    class_counts=class_counts_series,
+    tf_enrichment=tf_enrichment_df,
+)
+st.sidebar.divider()
+st.sidebar.download_button(
+    "Download debug log",
+    debug_text.encode("utf-8"),
+    file_name="adipotrack_debug.log",
+    mime="text/plain",
+    help="Plaintext snapshot of inputs, settings, and pipeline counts. "
+         "Attach this to bug reports.",
+)
