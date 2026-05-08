@@ -6,9 +6,12 @@ Run with:
 
 from __future__ import annotations
 
+import warnings
+
 import streamlit as st
 
 from analysis import (
+    CLASS_ORDER,
     TimepointInputs,
     consensus_at_timepoint,
     load_deg,
@@ -51,16 +54,32 @@ if not all([f_2h_g, f_2h_v, f_4h_g, f_4h_v]):
 
 
 @st.cache_data(show_spinner=False)
-def _load(file_bytes: bytes, name: str):
+def _load(file_bytes: bytes, _cache_key: str) -> "tuple":
+    """Load a DEG table; returns (df, list_of_warning_messages).
+
+    The `_cache_key` argument differentiates uploads with identical bytes-but-
+    different filenames; it isn't used inside the function.
+    """
     from io import BytesIO
-    return load_deg(BytesIO(file_bytes))
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        df = load_deg(BytesIO(file_bytes))
+    return df, [str(w.message) for w in captured]
 
 
 with st.spinner("Loading DEG files…"):
-    deg_2h_g = _load(f_2h_g.getvalue(), f_2h_g.name)
-    deg_2h_v = _load(f_2h_v.getvalue(), f_2h_v.name)
-    deg_4h_g = _load(f_4h_g.getvalue(), f_4h_g.name)
-    deg_4h_v = _load(f_4h_v.getvalue(), f_4h_v.name)
+    loaded = {
+        label: _load(f.getvalue(), f.name)
+        for label, f in [
+            ("2 h genetic", f_2h_g), ("2 h vehicle", f_2h_v),
+            ("4 h genetic", f_4h_g), ("4 h vehicle", f_4h_v),
+        ]
+    }
+for label, (_, msgs) in loaded.items():
+    for m in msgs:
+        st.warning(f"{label}: {m}")
+deg_2h_g, deg_2h_v = loaded["2 h genetic"][0], loaded["2 h vehicle"][0]
+deg_4h_g, deg_4h_v = loaded["4 h genetic"][0], loaded["4 h vehicle"][0]
 
 tp_2h = TimepointInputs(genetic=deg_2h_g, vehicle=deg_2h_v)
 tp_4h = TimepointInputs(genetic=deg_4h_g, vehicle=deg_4h_v)
@@ -92,10 +111,13 @@ with tab_overview:
         5. Effect size for plots = log₂FC from CRE+CNO vs CRE+SAL (direct chemogenetic).
         """
     )
-    st.dataframe(
-        traj["class"].value_counts().rename("genes").to_frame(),
-        use_container_width=False,
+    counts = (
+        traj["class"].value_counts()
+        .reindex(CLASS_ORDER, fill_value=0)
+        .rename("genes")
+        .to_frame()
     )
+    st.dataframe(counts, use_container_width=False)
 
 with tab_volcano:
     panels = [
@@ -145,9 +167,17 @@ with tab_traj:
 with tab_heatmap:
     if traj.empty:
         st.warning("No genes to plot.")
+    elif len(traj) < 4:
+        st.info(f"Only {len(traj)} consensus gene(s) — showing all.")
+        fig = heatmap(traj, max_genes=len(traj))
+        st.pyplot(fig, use_container_width=False)
+        st.download_button("Heatmap PDF", fig_to_bytes(fig, "pdf"),
+                           file_name="heatmap.pdf", mime="application/pdf")
     else:
-        max_n = st.slider("Max genes shown", 10, min(300, len(traj)),
-                          min(60, len(traj)))
+        ceiling = min(300, len(traj))
+        default = min(60, len(traj))
+        floor = min(4, ceiling)
+        max_n = st.slider("Max genes shown", floor, ceiling, default)
         fig = heatmap(traj, max_genes=max_n)
         st.pyplot(fig, use_container_width=False)
         st.download_button("Heatmap PDF", fig_to_bytes(fig, "pdf"),

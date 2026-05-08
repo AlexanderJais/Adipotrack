@@ -3,5 +3,5 @@ pandas>=2.0
 numpy>=1.24
 matplotlib>=3.7
 seaborn>=0.13
-matplotlib-venn>=0.11
+adjustText>=1.0
 openpyxl>=3.1

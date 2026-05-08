@@ -13,6 +13,7 @@ Conventions
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from io import BytesIO
 from typing import IO
@@ -20,22 +21,34 @@ from typing import IO
 import numpy as np
 import pandas as pd
 
-DEG_COLS = ["gene_id", "gene_name", "log2FoldChange", "pvalue", "padj"]
+DEG_REQUIRED = ["gene_id", "gene_name", "log2FoldChange", "pvalue", "padj"]
+DEG_ANNOTATIONS = [
+    "gene_biotype", "gene_description", "tf_family",
+    "gene_chr", "gene_start", "gene_end", "gene_strand", "gene_length",
+]
 
 
 def load_deg(source: str | IO[bytes]) -> pd.DataFrame:
     """Load a DESeq2 DEG table (tab-separated, .xls extension is misleading)."""
-    df = pd.read_csv(source, sep="\t", low_memory=False)
-    missing = [c for c in DEG_COLS if c not in df.columns]
+    df = pd.read_csv(source, sep="\t", low_memory=False, encoding="utf-8-sig")
+    missing = [c for c in DEG_REQUIRED if c not in df.columns]
     if missing:
         raise ValueError(f"DEG file missing required columns: {missing}")
-    df = df[DEG_COLS].copy()
+    keep = DEG_REQUIRED + [c for c in DEG_ANNOTATIONS if c in df.columns]
+    df = df[keep].copy()
     df["log2FoldChange"] = pd.to_numeric(df["log2FoldChange"], errors="coerce")
     df["padj"] = pd.to_numeric(df["padj"], errors="coerce")
     df = df.dropna(subset=["gene_name", "log2FoldChange", "padj"])
     df = df[df["gene_name"].astype(str).str.len() > 0]
-    # Collapse duplicate symbols by keeping the row with smallest padj
+    n_before = len(df)
     df = df.sort_values("padj").drop_duplicates("gene_name", keep="first")
+    n_collapsed = n_before - len(df)
+    if n_collapsed:
+        warnings.warn(
+            f"load_deg: collapsed {n_collapsed} duplicate gene_name rows "
+            "(kept smallest padj per symbol)",
+            stacklevel=2,
+        )
     return df.reset_index(drop=True)
 
 
@@ -53,7 +66,8 @@ def consensus_at_timepoint(
 ) -> pd.DataFrame:
     """Strict consensus: significant in both contrasts, concordant LFC sign.
 
-    Returns a per-gene table with both LFCs and padjs side by side.
+    Returns a per-gene table with both LFCs and padjs side by side, plus any
+    annotation columns carried from the genetic-control table.
     """
     g = tp.genetic.rename(columns={
         "log2FoldChange": "lfc_genetic",
@@ -61,7 +75,10 @@ def consensus_at_timepoint(
         "pvalue": "p_genetic",
         "gene_id": "gene_id_g",
     })
-    v = tp.vehicle.rename(columns={
+    # Strip annotations from the vehicle side so we don't get _x/_y suffix
+    # collisions on identical biological metadata.
+    v_drop = [c for c in DEG_ANNOTATIONS if c in tp.vehicle.columns]
+    v = tp.vehicle.drop(columns=v_drop).rename(columns={
         "log2FoldChange": "lfc_vehicle",
         "padj": "padj_vehicle",
         "pvalue": "p_vehicle",
@@ -87,30 +104,46 @@ def sig_set(df: pd.DataFrame, padj_thresh: float = 0.05) -> set[str]:
     return set(df.loc[df["padj"] < padj_thresh, "gene_name"].astype(str))
 
 
+_TRAJECTORY_NUMERIC_COLS = [
+    "lfc", "lfc_genetic", "lfc_vehicle", "padj_genetic", "padj_vehicle",
+]
+
+
 def trajectories(
     consensus_2h: pd.DataFrame,
     consensus_4h: pd.DataFrame,
 ) -> pd.DataFrame:
     """Genes that are strict-consensus at BOTH timepoints, with classes."""
-    a = consensus_2h[["gene_name", "lfc", "lfc_genetic", "lfc_vehicle",
-                      "padj_genetic", "padj_vehicle"]].rename(columns=lambda c:
-        f"{c}_2h" if c != "gene_name" else c)
-    b = consensus_4h[["gene_name", "lfc", "lfc_genetic", "lfc_vehicle",
-                      "padj_genetic", "padj_vehicle"]].rename(columns=lambda c:
-        f"{c}_4h" if c != "gene_name" else c)
+    a = consensus_2h[["gene_name", *_TRAJECTORY_NUMERIC_COLS]].rename(
+        columns={c: f"{c}_2h" for c in _TRAJECTORY_NUMERIC_COLS}
+    )
+    b = consensus_4h[["gene_name", *_TRAJECTORY_NUMERIC_COLS]].rename(
+        columns={c: f"{c}_4h" for c in _TRAJECTORY_NUMERIC_COLS}
+    )
     j = a.merge(b, on="gene_name", how="inner")
 
-    def classify(r: pd.Series) -> str:
-        s2, s4 = np.sign(r["lfc_2h"]), np.sign(r["lfc_4h"])
-        if s2 > 0 and s4 > 0:
-            return "stable_up" if abs(r["lfc_4h"]) >= abs(r["lfc_2h"]) else "damping_up"
-        if s2 < 0 and s4 < 0:
-            return "stable_down" if abs(r["lfc_4h"]) >= abs(r["lfc_2h"]) else "damping_down"
-        return "reversed"
-
-    j["class"] = j.apply(classify, axis=1)
+    s2 = np.sign(j["lfc_2h"].to_numpy())
+    s4 = np.sign(j["lfc_4h"].to_numpy())
+    grow = j["lfc_4h"].abs().to_numpy() >= j["lfc_2h"].abs().to_numpy()
+    same_up = (s2 > 0) & (s4 > 0)
+    same_dn = (s2 < 0) & (s4 < 0)
+    j["class"] = np.select(
+        [same_up & grow, same_up & ~grow, same_dn & grow, same_dn & ~grow],
+        ["stable_up", "damping_up", "stable_down", "damping_down"],
+        default="reversed",
+    )
     j["delta_lfc"] = j["lfc_4h"] - j["lfc_2h"]
-    return j.sort_values("class").reset_index(drop=True)
+
+    # Carry biological annotations from the 2 h consensus (identical at 4 h).
+    annot_cols = [c for c in DEG_ANNOTATIONS if c in consensus_2h.columns]
+    if annot_cols:
+        j = j.merge(
+            consensus_2h[["gene_name", *annot_cols]],
+            on="gene_name", how="left",
+        )
+
+    j["class"] = pd.Categorical(j["class"], categories=CLASS_ORDER, ordered=True)
+    return j.sort_values(["class", "delta_lfc"]).reset_index(drop=True)
 
 
 CLASS_ORDER = [

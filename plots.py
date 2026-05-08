@@ -81,9 +81,22 @@ def volcano(
         ax.axvline(-lfc_thresh, color="black", lw=0.4, ls="--")
 
     top = d[sig].nlargest(label_top_n, "neglog10padj")
-    for _, r in top.iterrows():
+    texts = [
         ax.text(r["log2FoldChange"], r["neglog10padj"], r["gene_name"],
-                fontsize=5, ha="left", va="bottom")
+                fontsize=5)
+        for _, r in top.iterrows()
+    ]
+    if texts:
+        try:
+            from adjustText import adjust_text
+            adjust_text(
+                texts, ax=ax,
+                arrowprops=dict(arrowstyle="-", color="black", lw=0.3),
+                expand_points=(1.2, 1.4),
+                only_move={"points": "y", "texts": "xy"},
+            )
+        except ImportError:
+            pass  # fall back to overlapping labels if adjustText isn't installed
 
     ax.set_xlabel("log$_2$ fold change")
     ax.set_ylabel(r"$-\log_{10}$ adjusted $P$")
@@ -156,14 +169,17 @@ def trajectory_lines(traj: pd.DataFrame, label_top_n: int = 6) -> plt.Figure:
     return fig
 
 
-def venn4(sets: dict[str, set[str]]) -> plt.Figure:
-    """Approximate 4-way overlap via UpSet-style bar chart (Venn4 is unreadable)."""
+def venn4(sets: dict[str, set[str]], max_rows: int = 20) -> plt.Figure:
+    """Approximate N-way overlap via UpSet-style bar chart (Venn4 is unreadable).
+
+    The all-N intersection is always pinned at the front so it's never dropped
+    by the size cap; remaining cells follow in size-descending order.
+    """
     apply_style()
     from itertools import combinations
 
     keys = list(sets.keys())
-    rows = []
-    # All non-empty subsets
+    rows: list[tuple[tuple[str, ...], int]] = []
     for r in range(1, len(keys) + 1):
         for combo in combinations(keys, r):
             inter = set.intersection(*(sets[k] for k in combo))
@@ -171,12 +187,21 @@ def venn4(sets: dict[str, set[str]]) -> plt.Figure:
             exclusive = inter - others
             if exclusive:
                 rows.append((combo, len(exclusive)))
-    rows.sort(key=lambda x: -x[1])
-    rows = rows[:15]
+
+    all_n = tuple(keys)
+    pinned = [r for r in rows if r[0] == all_n]
+    rest = sorted([r for r in rows if r[0] != all_n], key=lambda x: -x[1])
+    rows = (pinned + rest)[:max_rows]
+
+    if not rows:
+        fig, ax = plt.subplots(figsize=(3, 2))
+        ax.text(0.5, 0.5, "No significant genes", ha="center", va="center")
+        ax.axis("off")
+        return fig
 
     fig, (ax_bar, ax_dot) = plt.subplots(
-        2, 1, figsize=(0.45 * len(rows) + 1.2, 3.2),
-        gridspec_kw={"height_ratios": [3, 1.2], "hspace": 0.05},
+        2, 1, figsize=(0.45 * len(rows) + 1.2, 3.4),
+        gridspec_kw={"height_ratios": [3, 1.4], "hspace": 0.05},
         sharex=True,
     )
     xs = np.arange(len(rows))
@@ -191,7 +216,6 @@ def venn4(sets: dict[str, set[str]]) -> plt.Figure:
             ax_dot.plot(xi, yi, "o",
                         color="black" if on else "#DDDDDD",
                         markersize=4)
-        # Connect dots in the same column
     for xi, (combo, _) in enumerate(rows):
         ys = [keys.index(k) for k in combo]
         if len(ys) > 1:
@@ -204,7 +228,8 @@ def venn4(sets: dict[str, set[str]]) -> plt.Figure:
     for spine in ("top", "right", "bottom", "left"):
         ax_dot.spines[spine].set_visible(False)
 
-    fig.suptitle("Significant gene set overlaps", fontsize=8)
+    fig.suptitle("Significant gene set overlaps", fontsize=8, y=0.99)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
     return fig
 
 
