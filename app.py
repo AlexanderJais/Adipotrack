@@ -78,10 +78,35 @@ def _load(file_bytes: bytes, _cache_key: str) -> "tuple":
 
 
 @st.cache_data(show_spinner=False)
-def _load_samples_cached(file_bytes: bytes, _cache_key: str,
-                         a_label: str, b_label: str):
+def _qc_for_file(file_bytes: bytes, _cache_key: str,
+                 a_label: str, b_label: str):
+    """Load samples + run PCA + correlation in one cached call.
+
+    Returns (metadata, pca_scores, var_explained, corr_df). Heavy outputs
+    (the full expr matrix) are dropped before returning to keep the cache
+    entry small.
+    """
     from io import BytesIO
-    return load_samples(BytesIO(file_bytes), a_label, b_label)
+    sd = load_samples(BytesIO(file_bytes), a_label, b_label)
+    scores, var_exp = compute_pca(sd.expr)
+    corr = sample_correlation(sd.expr)
+    return sd.metadata, scores, var_exp, corr
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def _volcano_pdf(file_bytes: bytes, _cache_key: str,
+                 padj: float, lfc: float,
+                 highlight: tuple[str, ...], title: str) -> bytes:
+    """Render a volcano panel to PDF bytes. Cached on the panel's inputs so
+    download buttons don't re-render on every Streamlit rerun.
+    """
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+    df = load_deg(BytesIO(file_bytes))
+    fig = volcano(df, title, set(highlight), padj, lfc)
+    out = fig_to_bytes(fig, "pdf")
+    plt.close(fig)
+    return out
 
 
 with st.spinner("Loading DEG files…"):
@@ -174,19 +199,25 @@ with tab_overview:
 
 with tab_volcano:
     panels = [
-        ("2 h: CRE+CNO vs WT+CNO", deg_2h_g),
-        ("2 h: CRE+CNO vs CRE+SAL", deg_2h_v),
-        ("4 h: CRE+CNO vs WT+CNO", deg_4h_g),
-        ("4 h: CRE+CNO vs CRE+SAL", deg_4h_v),
+        ("2 h: CRE+CNO vs WT+CNO",  deg_2h_g, f_2h_g),
+        ("2 h: CRE+CNO vs CRE+SAL", deg_2h_v, f_2h_v),
+        ("4 h: CRE+CNO vs WT+CNO",  deg_4h_g, f_4h_g),
+        ("4 h: CRE+CNO vs CRE+SAL", deg_4h_v, f_4h_v),
     ]
-    highlight = set(traj["gene_name"])
+    highlight_set = set(traj["gene_name"])
+    highlight_key = tuple(sorted(highlight_set))  # hashable for cache_data
     cols = st.columns(2)
-    for i, (title, df) in enumerate(panels):
-        fig = volcano(df, title, highlight=highlight,
+    for i, (title, df, fobj) in enumerate(panels):
+        fig = volcano(df, title, highlight=highlight_set,
                       padj_thresh=padj_thresh, lfc_thresh=lfc_thresh)
         cols[i % 2].pyplot(fig, use_container_width=True)
+        pdf_bytes = _volcano_pdf(
+            fobj.getvalue(), fobj.name,
+            float(padj_thresh), float(lfc_thresh),
+            highlight_key, title,
+        )
         cols[i % 2].download_button(
-            f"Download PDF — {title}", fig_to_bytes(fig, "pdf"),
+            f"Download PDF — {title}", pdf_bytes,
             file_name=f"volcano_{title.replace(' ', '_').replace('+', '')}.pdf",
             mime="application/pdf", key=f"vd{i}",
         )
@@ -278,16 +309,15 @@ with tab_qc:
     for sub, (label, fobj, a_lbl, b_lbl) in zip(qc_subtabs, qc_files):
         with sub:
             try:
-                sd = _load_samples_cached(fobj.getvalue(), fobj.name,
-                                          a_lbl, b_lbl)
+                metadata, scores, var_exp, corr = _qc_for_file(
+                    fobj.getvalue(), fobj.name, a_lbl, b_lbl,
+                )
             except Exception as e:
                 st.error(f"Sample loading failed for {label}: {e}")
                 continue
-            scores, var_exp = compute_pca(sd.expr)
-            corr = sample_correlation(sd.expr)
 
             cA, cB = st.columns(2)
-            f_pca = pca_scatter(scores, var_exp, sd.metadata,
+            f_pca = pca_scatter(scores, var_exp, metadata,
                                 title=f"PCA · {label}")
             cA.pyplot(f_pca, use_container_width=True)
             cA.download_button(
@@ -296,7 +326,7 @@ with tab_qc:
                 mime="application/pdf",
                 key=f"pca_{label}",
             )
-            f_corr = sample_corr_heatmap(corr, sd.metadata,
+            f_corr = sample_corr_heatmap(corr, metadata,
                                          title=f"Sample correlation · {label}")
             cB.pyplot(f_corr, use_container_width=True)
             cB.download_button(

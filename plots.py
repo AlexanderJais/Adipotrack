@@ -112,24 +112,34 @@ def volcano(
 
     # Gene labels (top by significance) with adjustText repulsion
     top = d[sig].nlargest(label_top_n, "neglog10padj")
+    anchor_x = top["log2FoldChange"].clip(-x_lim, x_lim).to_numpy(dtype=float)
+    anchor_y = top["neglog10padj"].clip(upper=y_lim).to_numpy(dtype=float)
     texts = [
-        ax.text(
-            float(np.clip(r["log2FoldChange"], -x_lim, x_lim)),
-            float(min(r["neglog10padj"], y_lim)),
-            r["gene_name"],
-            fontsize=5,
-        )
-        for _, r in top.iterrows()
+        ax.text(x, y, name, fontsize=5)
+        for x, y, name in zip(anchor_x, anchor_y, top["gene_name"])
     ]
     if texts:
         try:
             from adjustText import adjust_text
-            adjust_text(
-                texts, ax=ax,
-                arrowprops=dict(arrowstyle="-", color="black", lw=0.3),
-                expand_points=(1.2, 1.4),
-                only_move={"points": "y", "texts": "xy"},
-            )
+            try:
+                adjust_text(
+                    texts,
+                    x=anchor_x.tolist(), y=anchor_y.tolist(), ax=ax,
+                    arrowprops=dict(arrowstyle="-", color="black",
+                                    lw=0.3, shrinkA=0, shrinkB=2),
+                    only_move={"text": "xy", "static": "xy", "explode": "xy"},
+                    expand=(1.2, 1.4),
+                    avoid_self=True,
+                )
+            except TypeError:
+                # adjustText 0.x signature
+                adjust_text(
+                    texts,
+                    x=anchor_x.tolist(), y=anchor_y.tolist(), ax=ax,
+                    arrowprops=dict(arrowstyle="-", color="black", lw=0.3),
+                    expand_points=(1.2, 1.4),
+                    only_move={"points": "y", "texts": "xy"},
+                )
         except ImportError:
             pass
 
@@ -399,44 +409,47 @@ def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
     d = enrichment.head(top_n).copy()
     d = d.iloc[::-1]  # so smallest q ends up at the top
 
-    # Clamp odds ratios into a finite log-display range. Values beyond the
-    # cap are plotted at the cap with a small triangle to indicate
-    # off-scale (typical when a TF family is exclusive to the foreground →
-    # OR = +inf, or when n_fg = 0 → OR = 0). Anything not finite becomes
-    # NaN and is plotted at x=0 with a hollow marker.
-    or_clipped = d["odds_ratio"].replace([np.inf, -np.inf], np.nan)
-    log_or = np.log2(or_clipped.where(or_clipped > 0))
+    # All masks built in numpy so the boolean ops never mix Series and
+    # ndarray. ±log_cap clamps values beyond the cap; rows with undefined
+    # OR (e.g. 0 in foreground or background) end up as NaN and are
+    # rendered as hollow rings at x = 0.
+    or_arr = d["odds_ratio"].to_numpy(dtype=float)
+    or_pos = np.where(or_arr > 0, or_arr, np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_or = np.log2(or_pos)
     log_cap = 6.0  # ±6 in log2 space ≈ 64-fold enrichment; plenty of headroom
-    log_or_capped = log_or.clip(-log_cap, log_cap)
-    off_high = (d["odds_ratio"].to_numpy() == np.inf) | (log_or > log_cap)
-    off_low = (log_or < -log_cap)
-    nan_mask = log_or.isna().to_numpy() & ~off_high & ~off_low
-    d["log_or"] = log_or_capped
-    d["mlog10q"] = -np.log10(d["q_value"].clip(lower=1e-300))
+    log_or_capped = np.clip(log_or, -log_cap, log_cap)
+
+    off_high = (or_arr == np.inf) | (log_or > log_cap)
+    off_low = log_or < -log_cap
+    nan_mask = ~np.isfinite(log_or) & ~off_high & ~off_low
+    main_mask = ~nan_mask  # everything that has a finite (possibly clipped) value
+
+    n_fg = d["n_fg"].to_numpy()
+    mlog10q = -np.log10(d["q_value"].clip(lower=1e-300).to_numpy(dtype=float))
+    y_pos = np.arange(len(d))
 
     fig, ax = plt.subplots(figsize=(3.8, 0.22 * len(d) + 1.0))
     sc = ax.scatter(
-        d.loc[~nan_mask, "log_or"], np.arange(len(d))[~nan_mask],
-        s=d.loc[~nan_mask, "n_fg"] * 12 + 10,
-        c=d.loc[~nan_mask, "mlog10q"], cmap="viridis",
+        log_or_capped[main_mask], y_pos[main_mask],
+        s=n_fg[main_mask] * 12 + 10,
+        c=mlog10q[main_mask], cmap="viridis",
         edgecolor="black", linewidths=0.3,
     )
     if nan_mask.any():
         ax.scatter(
-            np.zeros(nan_mask.sum()), np.arange(len(d))[nan_mask],
-            s=d.loc[nan_mask, "n_fg"] * 12 + 10,
+            np.zeros(nan_mask.sum()), y_pos[nan_mask],
+            s=n_fg[nan_mask] * 12 + 10,
             facecolors="none", edgecolor="grey", linewidths=0.3,
         )
     if off_high.any():
         ax.scatter(
-            np.full(off_high.sum(), log_cap),
-            np.arange(len(d))[off_high],
+            np.full(off_high.sum(), log_cap), y_pos[off_high],
             marker=">", s=30, c="black",
         )
     if off_low.any():
         ax.scatter(
-            np.full(off_low.sum(), -log_cap),
-            np.arange(len(d))[off_low],
+            np.full(off_low.sum(), -log_cap), y_pos[off_low],
             marker="<", s=30, c="black",
         )
     ax.set_xlim(-log_cap * 1.05, log_cap * 1.05)
