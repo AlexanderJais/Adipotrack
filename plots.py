@@ -442,7 +442,7 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
     else:
         vmax = 1.0
 
-    fig, ax = plt.subplots(figsize=(2.8, 0.13 * len(d) + 1.2))
+    fig, ax = plt.subplots(figsize=(3.4, 0.13 * len(d) + 1.6))
     im = ax.imshow(mat, aspect="auto", cmap="RdBu_r", vmin=-vmax, vmax=vmax,
                    interpolation="nearest")
 
@@ -480,10 +480,18 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
                 cls.replace("_", " "), fontsize=5, va="center", ha="left",
                 clip_on=False)
 
-    cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.18)
+    # Horizontal colourbar at the bottom so it doesn't collide with the
+    # right-side class swatch and labels.
+    cbar = fig.colorbar(
+        im, ax=ax,
+        orientation="horizontal",
+        fraction=0.05, pad=0.16, aspect=30, shrink=0.6,
+    )
     cbar.set_label("log$_2$FC", fontsize=6)
     cbar.ax.tick_params(labelsize=5)
     cbar.outline.set_linewidth(0.4)
 
-    fig.tight_layout()
+    # Reserve space on the right for the class swatch + labels (~25% of axes
+    # width is plenty for short class names at fontsize 5).
+    fig.tight_layout(rect=(0, 0, 0.78, 1))
     return fig

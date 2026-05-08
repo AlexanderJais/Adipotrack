@@ -121,10 +121,10 @@ with tab_overview:
 
 with tab_volcano:
     panels = [
-        ("2 h — CRE+CNO vs WT+CNO", deg_2h_g),
-        ("2 h — CRE+CNO vs CRE+SAL", deg_2h_v),
-        ("4 h — CRE+CNO vs WT+CNO", deg_4h_g),
-        ("4 h — CRE+CNO vs CRE+SAL", deg_4h_v),
+        ("2 h: CRE+CNO vs WT+CNO", deg_2h_g),
+        ("2 h: CRE+CNO vs CRE+SAL", deg_2h_v),
+        ("4 h: CRE+CNO vs WT+CNO", deg_4h_g),
+        ("4 h: CRE+CNO vs CRE+SAL", deg_4h_v),
     ]
     highlight = set(traj["gene_name"])
     cols = st.columns(2)
