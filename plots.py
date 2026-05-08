@@ -201,8 +201,20 @@ def lfc_scatter(traj: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def trajectory_lines(traj: pd.DataFrame, label_top_n: int = 6) -> plt.Figure:
-    """One line per gene from 2h to 4h, faceted by class."""
+def trajectory_lines(
+    traj: pd.DataFrame,
+    label_top_n: int = 8,
+    panel_width: float = 2.8,
+    panel_height: float = 4.2,
+) -> plt.Figure:
+    """One line per gene from 2 h to 4 h, faceted by class.
+
+    Each panel reserves a right-hand label gutter (x = 1.0 → 1.6) so labels
+    can be repelled outward without colliding with the trajectories. The
+    per-class median is drawn on top with a white halo for visibility.
+    """
+    import matplotlib.patheffects as pe
+
     apply_style()
     classes = [c for c in CLASS_ORDER if (traj["class"] == c).any()]
     n = len(classes)
@@ -212,11 +224,16 @@ def trajectory_lines(traj: pd.DataFrame, label_top_n: int = 6) -> plt.Figure:
         ax.axis("off")
         return fig
 
-    # Shared symmetric y-range for honest cross-class comparison
+    # Shared symmetric y-range so panels can be compared at a glance.
     arr = np.concatenate([traj["lfc_2h"].to_numpy(), traj["lfc_4h"].to_numpy()])
-    y_lim = max(float(np.nanquantile(np.abs(arr), 0.99)) * 1.15, 1.0) if arr.size else 1.0
+    if arr.size:
+        y_lim = max(float(np.nanquantile(np.abs(arr), 0.99)) * 1.18, 1.0)
+    else:
+        y_lim = 1.0
 
-    fig, axes = plt.subplots(1, n, figsize=(2.0 * n, 2.8), sharey=True)
+    fig, axes = plt.subplots(
+        1, n, figsize=(panel_width * n, panel_height), sharey=True,
+    )
     if n == 1:
         axes = [axes]
 
@@ -228,40 +245,104 @@ def trajectory_lines(traj: pd.DataFrame, label_top_n: int = 6) -> plt.Figure:
 
     for ax, cls in zip(axes, classes):
         sub = traj[traj["class"] == cls]
-        # Per-gene lines with median trajectory drawn on top
+
+        # Per-gene trajectories
         for _, r in sub.iterrows():
             ax.plot([0, 1], [r["lfc_2h"], r["lfc_4h"]],
-                    color=CLASS_COLORS[cls], lw=0.4, alpha=0.4)
+                    color=CLASS_COLORS[cls], lw=0.5, alpha=0.45,
+                    zorder=2)
+
+        # Median trajectory with white halo
         if len(sub) >= 3:
             med = [sub["lfc_2h"].median(), sub["lfc_4h"].median()]
-            ax.plot([0, 1], med, color="black", lw=1.2, marker="o",
-                    markersize=3, markerfacecolor="white", markeredgewidth=0.6)
-        ax.axhline(0, color="black", lw=0.3)
+            (line,) = ax.plot(
+                [0, 1], med, color="black", lw=1.6,
+                marker="o", markersize=4,
+                markerfacecolor="white", markeredgewidth=0.8,
+                zorder=5,
+            )
+            line.set_path_effects([
+                pe.Stroke(linewidth=3.0, foreground="white"),
+                pe.Normal(),
+            ])
+
+        ax.axhline(0, color="black", lw=0.3, zorder=1)
         ax.set_xticks([0, 1])
         ax.set_xticklabels(["2 h", "4 h"])
-        ax.set_xlim(-0.15, 1.15)
+        ax.set_xlim(-0.15, 1.65)  # extra room on the right for labels
         ax.set_ylim(-y_lim, y_lim)
         ax.set_title(f"{cls.replace('_', ' ')}\n(n = {len(sub)})")
 
-        # Label the most-extreme genes with adjustText repulsion
+        # Right-edge label gutter
         if not sub.empty:
             extreme = sub.iloc[
                 sub["lfc_4h"].abs().to_numpy().argsort()[::-1]
             ].head(label_top_n)
+
+            anchor_x = np.full(len(extreme), 1.0)
+            anchor_y = extreme["lfc_4h"].to_numpy(dtype=float)
+
             texts = [
-                ax.text(1.0, r["lfc_4h"], r["gene_name"], fontsize=5, va="center")
-                for _, r in extreme.iterrows()
-            ]
-            if have_adjust and texts:
-                adjust_text(
-                    texts, ax=ax,
-                    arrowprops=dict(arrowstyle="-", color="grey", lw=0.3),
-                    only_move={"points": "y", "texts": "y"},
+                ax.text(
+                    1.18, y, name,
+                    fontsize=5.5, va="center", ha="left", zorder=6,
                 )
+                for y, name in zip(anchor_y, extreme["gene_name"])
+            ]
+
+            if have_adjust and texts:
+                # adjustText API differs across versions — try kwargs that
+                # work on 0.8 / 1.x and silently fall back if something
+                # in the call signature changed.
+                try:
+                    adjust_text(
+                        texts,
+                        x=anchor_x.tolist(),
+                        y=anchor_y.tolist(),
+                        ax=ax,
+                        arrowprops=dict(
+                            arrowstyle="-", color="grey",
+                            lw=0.3, shrinkA=0, shrinkB=2,
+                        ),
+                        only_move={"text": "y", "static": "y", "explode": "y"},
+                        expand=(1.1, 1.4),
+                        force_text=(0.0, 0.6),
+                        autoalign=False,
+                        avoid_self=True,
+                    )
+                except TypeError:
+                    adjust_text(
+                        texts,
+                        x=anchor_x.tolist(),
+                        y=anchor_y.tolist(),
+                        ax=ax,
+                        arrowprops=dict(
+                            arrowstyle="-", color="grey", lw=0.3,
+                        ),
+                        only_move={"points": "", "texts": "y"},
+                    )
+            else:
+                # Plain fallback: nudge labels apart by sorting on y and
+                # spacing them at a minimum vertical separation.
+                _stack_labels(texts, ax, min_gap=y_lim * 0.06)
 
     axes[0].set_ylabel("log$_2$ fold change (CRE+CNO vs CRE+SAL)")
     fig.tight_layout()
     return fig
+
+
+def _stack_labels(texts, ax, min_gap: float) -> None:
+    """Greedy vertical-stacking fallback if adjustText isn't available."""
+    items = sorted(
+        ((t, t.get_position()[1]) for t in texts),
+        key=lambda p: p[1],
+    )
+    last_y = -np.inf
+    for t, y in items:
+        new_y = max(y, last_y + min_gap)
+        x = t.get_position()[0]
+        t.set_position((x, new_y))
+        last_y = new_y
 
 
 def venn4(sets: dict[str, set[str]], max_rows: int = 20) -> plt.Figure:
