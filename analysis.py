@@ -235,12 +235,8 @@ def tf_enrichment(
         c = int((bg_excl["tf_family"] == fam).sum())
         d = bg_total - c
         # One-sided "greater": we only care about over-representation.
-        try:
-            res = fisher_exact([[a, b], [c, d]], alternative="greater")
-            odds, p = float(res.statistic), float(res.pvalue)
-        except TypeError:
-            # scipy < 1.7 returns a tuple
-            odds, p = fisher_exact([[a, b], [c, d]], alternative="greater")
+        res = fisher_exact([[a, b], [c, d]], alternative="greater")
+        odds, p = float(res.statistic), float(res.pvalue)
         rows.append({
             "tf_family": fam,
             "n_fg": a, "n_fg_total": fg_total,

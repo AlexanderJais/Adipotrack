@@ -502,9 +502,14 @@ def sample_corr_heatmap(corr: pd.DataFrame, metadata: pd.DataFrame,
     """Pairwise correlation heatmap of samples with group labels."""
     apply_style()
     n = len(corr)
+    arr = corr.to_numpy()
+    # nanmin so a NaN cell (e.g. a constant sample column) doesn't blank the
+    # whole panel via vmin=NaN; fall back to 0 if the entire matrix is NaN.
+    finite = arr[np.isfinite(arr)]
+    vmin = float(finite.min()) if finite.size else 0.0
     fig, ax = plt.subplots(figsize=(0.32 * n + 1.6, 0.32 * n + 1.4))
-    im = ax.imshow(corr.to_numpy(), vmin=corr.to_numpy().min(),
-                   vmax=1.0, cmap="magma", interpolation="nearest")
+    im = ax.imshow(arr, vmin=vmin, vmax=1.0,
+                   cmap="magma", interpolation="nearest")
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
     ax.set_xticklabels(corr.columns, rotation=90, fontsize=5)
