@@ -153,8 +153,8 @@ def volcano(
 
     ax.set_xlim(-x_lim, x_lim)
     ax.set_ylim(0, y_lim)
-    ax.set_xlabel("log$_2$ fold change")
-    ax.set_ylabel(r"$-\log_{10}$ adjusted $P$")
+    ax.set_xlabel("log₂ fold change")
+    ax.set_ylabel("−log₁₀ adjusted P")
     ax.set_title(title)
     fig.tight_layout()
     return fig
@@ -195,15 +195,15 @@ def lfc_scatter(traj: pd.DataFrame) -> plt.Figure:
         try:
             from scipy.stats import spearmanr
             rho, _ = spearmanr(traj["lfc_2h"], traj["lfc_4h"])
-            rho_text = rf"Spearman $\rho$ = {rho:.2f}"
+            rho_text = f"Spearman ρ = {rho:.2f}"
         except ImportError:
             r = float(np.corrcoef(traj["lfc_2h"], traj["lfc_4h"])[0, 1])
-            rho_text = rf"Pearson $r$ = {r:.2f}"
+            rho_text = f"Pearson r = {r:.2f}"
         ax.text(0.03, 0.97, rho_text, transform=ax.transAxes,
                 ha="left", va="top", fontsize=6)
 
-    ax.set_xlabel("log$_2$FC at 2 h (CRE+CNO vs CRE+SAL)")
-    ax.set_ylabel("log$_2$FC at 4 h (CRE+CNO vs CRE+SAL)")
+    ax.set_xlabel("log₂FC at 2 h (CRE+CNO vs CRE+SAL)")
+    ax.set_ylabel("log₂FC at 4 h (CRE+CNO vs CRE+SAL)")
     ax.set_title(f"Trajectory genes (n = {len(traj)})")
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
     ax.set_aspect("equal")
@@ -319,7 +319,7 @@ def trajectory_lines(
                 # spacing them at a minimum vertical separation.
                 _stack_labels(texts, ax, min_gap=y_lim * 0.06)
 
-    axes[0].set_ylabel("log$_2$ fold change (CRE+CNO vs CRE+SAL)")
+    axes[0].set_ylabel("log₂ fold change (CRE+CNO vs CRE+SAL)")
     fig.tight_layout()
     return fig
 
@@ -371,7 +371,7 @@ def tf_lfc_panel(traj: pd.DataFrame, max_per_class: int = 12) -> plt.Figure:
             fontsize=5,
         )
         ax.axvline(0, color="black", lw=0.4)
-        ax.set_xlabel("log$_2$FC at 4 h")
+        ax.set_xlabel("log₂FC at 4 h")
         ax.set_title(f"{cls.replace('_', ' ')}\n(n = {len(sub)} of {(tfs['class'] == cls).sum()})")
     # Hoisted out of the loop — sharex propagates to all panels in one go.
     axes[0].set_xlim(-x_lim, x_lim)
@@ -439,11 +439,11 @@ def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
     ax.axvline(0, color="black", lw=0.3, ls="--")
     ax.set_yticks(np.arange(len(d)))
     ax.set_yticklabels(d["tf_family"], fontsize=6)
-    ax.set_xlabel("log$_2$ odds ratio (foreground vs background)")
+    ax.set_xlabel("log₂ odds ratio (foreground vs background)")
     ax.set_title(f"TF-family enrichment (top {len(d)})")
 
     cbar = fig.colorbar(sc, ax=ax, fraction=0.04, pad=0.04)
-    cbar.set_label(r"$-\log_{10}\,q$", fontsize=6)
+    cbar.set_label("−log₁₀ q", fontsize=6)
     cbar.ax.tick_params(labelsize=5)
     cbar.outline.set_linewidth(0.4)
 
@@ -686,7 +686,7 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
         orientation="horizontal",
         fraction=0.05, pad=0.16, aspect=30, shrink=0.6,
     )
-    cbar.set_label("log$_2$FC", fontsize=6)
+    cbar.set_label("log₂FC", fontsize=6)
     cbar.ax.tick_params(labelsize=5)
     cbar.outline.set_linewidth(0.4)
 
