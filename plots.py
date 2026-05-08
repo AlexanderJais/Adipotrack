@@ -60,30 +60,65 @@ def volcano(
     d["neglog10padj"] = -np.log10(d["padj"].clip(lower=1e-300))
     sig = (d["padj"] < padj_thresh) & (d["log2FoldChange"].abs() >= lfc_thresh)
 
-    fig, ax = plt.subplots(figsize=(3.2, 3.0))
-    ax.scatter(d.loc[~sig, "log2FoldChange"], d.loc[~sig, "neglog10padj"],
+    # Axis limits driven by *significant* genes so non-sig outliers don't
+    # collapse the visible range. Non-sig points outside the window are
+    # rendered as off-scale triangles at the boundary.
+    if sig.any():
+        x_ref = d.loc[sig, "log2FoldChange"].abs().max()
+        y_ref = d.loc[sig, "neglog10padj"].max()
+    else:
+        x_ref = d["log2FoldChange"].abs().quantile(0.99)
+        y_ref = d["neglog10padj"].quantile(0.99)
+    x_lim = max(float(x_ref) * 1.2, 1.0)
+    y_lim = max(float(y_ref) * 1.10, -np.log10(padj_thresh) * 1.5)
+
+    x_clip = d["log2FoldChange"].clip(-x_lim, x_lim)
+    y_clip = d["neglog10padj"].clip(upper=y_lim)
+    off_x = d["log2FoldChange"].abs() > x_lim
+    off_y = d["neglog10padj"] > y_lim
+
+    fig, ax = plt.subplots(figsize=(3.4, 3.2))
+    ns = ~sig
+    ax.scatter(x_clip[ns & ~off_x & ~off_y], y_clip[ns & ~off_x & ~off_y],
                s=3, c="#BBBBBB", alpha=0.5, linewidths=0, rasterized=True)
     up = sig & (d["log2FoldChange"] > 0)
     dn = sig & (d["log2FoldChange"] < 0)
-    ax.scatter(d.loc[up, "log2FoldChange"], d.loc[up, "neglog10padj"],
-               s=4, c="#D55E00", alpha=0.85, linewidths=0, rasterized=True)
-    ax.scatter(d.loc[dn, "log2FoldChange"], d.loc[dn, "neglog10padj"],
-               s=4, c="#0072B2", alpha=0.85, linewidths=0, rasterized=True)
+    ax.scatter(x_clip[up], y_clip[up], s=5, c="#D55E00", alpha=0.85,
+               linewidths=0, rasterized=True)
+    ax.scatter(x_clip[dn], y_clip[dn], s=5, c="#0072B2", alpha=0.85,
+               linewidths=0, rasterized=True)
+
+    # Off-scale markers at the boundary
+    if off_x.any():
+        right = off_x & (d["log2FoldChange"] > 0)
+        left = off_x & (d["log2FoldChange"] < 0)
+        ax.scatter([x_lim] * int(right.sum()), y_clip[right],
+                   marker=">", s=10, c="#888888", linewidths=0)
+        ax.scatter([-x_lim] * int(left.sum()), y_clip[left],
+                   marker="<", s=10, c="#888888", linewidths=0)
+    if off_y.any():
+        ax.scatter(x_clip[off_y], [y_lim] * int(off_y.sum()),
+                   marker="^", s=10, c="#888888", linewidths=0)
 
     if highlight:
-        h = d[d["gene_name"].isin(highlight)]
-        ax.scatter(h["log2FoldChange"], h["neglog10padj"],
-                   s=10, facecolors="none", edgecolors="black", linewidths=0.4)
+        h_mask = d["gene_name"].isin(highlight)
+        ax.scatter(x_clip[h_mask], y_clip[h_mask],
+                   s=12, facecolors="none", edgecolors="black", linewidths=0.4)
 
     ax.axhline(-np.log10(padj_thresh), color="black", lw=0.4, ls="--")
     if lfc_thresh > 0:
         ax.axvline(lfc_thresh, color="black", lw=0.4, ls="--")
         ax.axvline(-lfc_thresh, color="black", lw=0.4, ls="--")
 
+    # Gene labels (top by significance) with adjustText repulsion
     top = d[sig].nlargest(label_top_n, "neglog10padj")
     texts = [
-        ax.text(r["log2FoldChange"], r["neglog10padj"], r["gene_name"],
-                fontsize=5)
+        ax.text(
+            float(np.clip(r["log2FoldChange"], -x_lim, x_lim)),
+            float(min(r["neglog10padj"], y_lim)),
+            r["gene_name"],
+            fontsize=5,
+        )
         for _, r in top.iterrows()
     ]
     if texts:
@@ -96,8 +131,18 @@ def volcano(
                 only_move={"points": "y", "texts": "xy"},
             )
         except ImportError:
-            pass  # fall back to overlapping labels if adjustText isn't installed
+            pass
 
+    # Up/down counts
+    n_up = int(up.sum())
+    n_dn = int(dn.sum())
+    ax.text(0.02, 0.98, f"↓ {n_dn}", transform=ax.transAxes,
+            ha="left", va="top", fontsize=6, color="#0072B2")
+    ax.text(0.98, 0.98, f"↑ {n_up}", transform=ax.transAxes,
+            ha="right", va="top", fontsize=6, color="#D55E00")
+
+    ax.set_xlim(-x_lim, x_lim)
+    ax.set_ylim(0, y_lim)
     ax.set_xlabel("log$_2$ fold change")
     ax.set_ylabel(r"$-\log_{10}$ adjusted $P$")
     ax.set_title(title)
@@ -108,25 +153,48 @@ def volcano(
 def lfc_scatter(traj: pd.DataFrame) -> plt.Figure:
     """LFC at 2h vs LFC at 4h for genes consensus at both timepoints."""
     apply_style()
-    fig, ax = plt.subplots(figsize=(3.4, 3.4))
+    fig, ax = plt.subplots(figsize=(3.6, 3.4))
+
+    counts = traj["class"].value_counts().reindex(CLASS_ORDER, fill_value=0)
     for cls in CLASS_ORDER:
         sub = traj[traj["class"] == cls]
         if sub.empty:
             continue
         ax.scatter(sub["lfc_2h"], sub["lfc_4h"],
-                   s=8, c=CLASS_COLORS[cls], alpha=0.85,
-                   linewidths=0, label=cls.replace("_", " "))
+                   s=10, c=CLASS_COLORS[cls], alpha=0.85,
+                   linewidths=0,
+                   label=f"{cls.replace('_', ' ')}  (n={counts[cls]})")
 
-    lim = float(np.nanmax(np.abs([traj["lfc_2h"], traj["lfc_4h"]]))) * 1.1
-    lim = max(lim, 1.0)
+    # Symmetric, robust limits: 99th percentile padded — outliers stay visible
+    # but don't compress the bulk of the consensus genes.
+    arr = np.concatenate([traj["lfc_2h"].to_numpy(),
+                          traj["lfc_4h"].to_numpy()])
+    if arr.size:
+        q = float(np.nanquantile(np.abs(arr), 0.99))
+        lim = max(q * 1.15, 1.0)
+    else:
+        lim = 1.0
     ax.plot([-lim, lim], [-lim, lim], color="black", lw=0.4, ls="--")
     ax.axhline(0, color="black", lw=0.3)
     ax.axvline(0, color="black", lw=0.3)
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
+
+    # Spearman ρ on the consensus set (rank-based, robust to outliers)
+    if len(traj) >= 3:
+        try:
+            from scipy.stats import spearmanr
+            rho, _ = spearmanr(traj["lfc_2h"], traj["lfc_4h"])
+            rho_text = rf"Spearman $\rho$ = {rho:.2f}"
+        except ImportError:
+            r = float(np.corrcoef(traj["lfc_2h"], traj["lfc_4h"])[0, 1])
+            rho_text = rf"Pearson $r$ = {r:.2f}"
+        ax.text(0.03, 0.97, rho_text, transform=ax.transAxes,
+                ha="left", va="top", fontsize=6)
+
     ax.set_xlabel("log$_2$FC at 2 h (CRE+CNO vs CRE+SAL)")
     ax.set_ylabel("log$_2$FC at 4 h (CRE+CNO vs CRE+SAL)")
-    ax.set_title(f"Consensus genes (n = {len(traj)})")
+    ax.set_title(f"Trajectory genes (n = {len(traj)})")
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
     ax.set_aspect("equal")
     fig.tight_layout()
@@ -144,26 +212,53 @@ def trajectory_lines(traj: pd.DataFrame, label_top_n: int = 6) -> plt.Figure:
         ax.axis("off")
         return fig
 
-    fig, axes = plt.subplots(1, n, figsize=(1.8 * n, 2.6), sharey=True)
+    # Shared symmetric y-range for honest cross-class comparison
+    arr = np.concatenate([traj["lfc_2h"].to_numpy(), traj["lfc_4h"].to_numpy()])
+    y_lim = max(float(np.nanquantile(np.abs(arr), 0.99)) * 1.15, 1.0) if arr.size else 1.0
+
+    fig, axes = plt.subplots(1, n, figsize=(2.0 * n, 2.8), sharey=True)
     if n == 1:
         axes = [axes]
+
+    try:
+        from adjustText import adjust_text
+        have_adjust = True
+    except ImportError:
+        have_adjust = False
+
     for ax, cls in zip(axes, classes):
         sub = traj[traj["class"] == cls]
+        # Per-gene lines with median trajectory drawn on top
         for _, r in sub.iterrows():
             ax.plot([0, 1], [r["lfc_2h"], r["lfc_4h"]],
-                    color=CLASS_COLORS[cls], lw=0.4, alpha=0.5)
+                    color=CLASS_COLORS[cls], lw=0.4, alpha=0.4)
+        if len(sub) >= 3:
+            med = [sub["lfc_2h"].median(), sub["lfc_4h"].median()]
+            ax.plot([0, 1], med, color="black", lw=1.2, marker="o",
+                    markersize=3, markerfacecolor="white", markeredgewidth=0.6)
         ax.axhline(0, color="black", lw=0.3)
         ax.set_xticks([0, 1])
         ax.set_xticklabels(["2 h", "4 h"])
+        ax.set_xlim(-0.15, 1.15)
+        ax.set_ylim(-y_lim, y_lim)
         ax.set_title(f"{cls.replace('_', ' ')}\n(n = {len(sub)})")
-        # Label most-extreme genes
+
+        # Label the most-extreme genes with adjustText repulsion
         if not sub.empty:
-            extreme = sub.reindex(
-                sub["lfc_4h"].abs().sort_values(ascending=False).index
-            ).head(label_top_n)
-            for _, r in extreme.iterrows():
-                ax.text(1.02, r["lfc_4h"], r["gene_name"],
-                        fontsize=5, va="center")
+            extreme = sub.iloc[
+                sub["lfc_4h"].abs().to_numpy().argsort()[::-1]
+            ].head(label_top_n)
+            texts = [
+                ax.text(1.0, r["lfc_4h"], r["gene_name"], fontsize=5, va="center")
+                for _, r in extreme.iterrows()
+            ]
+            if have_adjust and texts:
+                adjust_text(
+                    texts, ax=ax,
+                    arrowprops=dict(arrowstyle="-", color="grey", lw=0.3),
+                    only_move={"points": "y", "texts": "y"},
+                )
+
     axes[0].set_ylabel("log$_2$ fold change (CRE+CNO vs CRE+SAL)")
     fig.tight_layout()
     return fig
@@ -243,14 +338,13 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
         return fig
 
     d = traj.copy()
-    d["score"] = d[["lfc_2h", "lfc_4h"]].abs().max(axis=1)
     d = d.sort_values(["class", "lfc_4h"], ascending=[True, False])
     if len(d) > max_genes:
-        # Keep top-N per class by |lfc_4h|
+        per_class = max(2, max_genes // max(1, d["class"].nunique()))
         d = (
             d.groupby("class", group_keys=False)
             .apply(lambda g: g.reindex(g["lfc_4h"].abs().sort_values(ascending=False).index)
-                   .head(max(2, max_genes // max(1, d["class"].nunique()))))
+                   .head(per_class))
         )
 
     mat = d[[
@@ -259,18 +353,53 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
     ]].to_numpy()
     col_labels = ["2h vs WT", "2h vs SAL", "4h vs WT", "4h vs SAL"]
 
-    vmax = float(np.nanmax(np.abs(mat))) if mat.size else 1.0
-    vmax = max(vmax, 0.5)
+    # Symmetric, robust colour scale (99th percentile) so a single huge LFC
+    # doesn't desaturate everything else.
+    if mat.size:
+        vmax = float(np.nanquantile(np.abs(mat), 0.99))
+        vmax = max(vmax, 0.5)
+    else:
+        vmax = 1.0
 
-    fig, ax = plt.subplots(figsize=(2.6, 0.12 * len(d) + 1.0))
-    im = ax.imshow(mat, aspect="auto", cmap="RdBu_r", vmin=-vmax, vmax=vmax)
+    fig, ax = plt.subplots(figsize=(2.8, 0.13 * len(d) + 1.2))
+    im = ax.imshow(mat, aspect="auto", cmap="RdBu_r", vmin=-vmax, vmax=vmax,
+                   interpolation="nearest")
+
+    # Class separator lines + right-side class label bar
+    classes_in_order = list(d["class"].astype(str))
+    boundaries = [i for i in range(1, len(classes_in_order))
+                  if classes_in_order[i] != classes_in_order[i - 1]]
+    for b in boundaries:
+        ax.axhline(b - 0.5, color="white", lw=1.0)
+        ax.axhline(b - 0.5, color="black", lw=0.4)
+
+    # Vertical separator between 2h and 4h block
+    ax.axvline(1.5, color="white", lw=1.0)
+    ax.axvline(1.5, color="black", lw=0.4)
+
     ax.set_xticks(range(len(col_labels)))
     ax.set_xticklabels(col_labels, rotation=45, ha="right")
     ax.set_yticks(range(len(d)))
     ax.set_yticklabels(d["gene_name"], fontsize=5)
     ax.tick_params(left=False, bottom=False)
 
-    cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
+    # Colour-coded class swatch on the right edge
+    starts = [0] + boundaries + [len(classes_in_order)]
+    for s, e in zip(starts[:-1], starts[1:]):
+        cls = classes_in_order[s]
+        ax.add_patch(plt.Rectangle(
+            (len(col_labels) - 0.4, s - 0.5),
+            0.18, e - s,
+            facecolor=CLASS_COLORS.get(cls, "#999999"),
+            edgecolor="none",
+            transform=ax.transData,
+            clip_on=False,
+        ))
+        ax.text(len(col_labels) - 0.1, (s + e) / 2 - 0.5,
+                cls.replace("_", " "), fontsize=5, va="center", ha="left",
+                clip_on=False)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.18)
     cbar.set_label("log$_2$FC", fontsize=6)
     cbar.ax.tick_params(labelsize=5)
     cbar.outline.set_linewidth(0.4)
