@@ -31,7 +31,7 @@ import pandas as pd
 #                         (e.g. S897_TC2 = transgene + CNO at 2 h).
 SAMPLE_COL_PATTERNS = (
     re.compile(r"^(?:Cre|Wt)_Q\d+$", re.IGNORECASE),
-    re.compile(r"^S\d+_[A-Za-z]+\d+$"),
+    re.compile(r"^[A-Za-z]+\d+_[A-Za-z]+\d+$"),
 )
 SAMPLE_COL_RE = SAMPLE_COL_PATTERNS[0]  # kept for backwards compat
 
