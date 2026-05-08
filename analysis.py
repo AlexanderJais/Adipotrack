@@ -1,14 +1,20 @@
-"""DEG loading, consensus calling, trajectory classification.
+"""DEG loading, consensus calling, trajectory classification, replicate QC.
 
 Conventions
 -----------
-- Significance: padj < 0.05 (configurable).
+- Significance: ``padj < 0.05`` (configurable).
 - Strict consensus at a timepoint: a gene must be significant in BOTH the
-  genetic-control (CRE+CNO vs WT+CNO) and vehicle-control (CRE+CNO vs CRE+SAL)
-  comparisons AND have the same sign of log2FoldChange in both.
-- Trajectory set = intersection: genes that are strict-consensus at BOTH 2h and 4h.
-- Canonical effect size for trajectories: LFC from the vehicle-control comparison
-  (CRE+CNO vs CRE+SAL), since it directly captures the chemogenetic activation.
+  genetic-control (CRE+CNO vs WT+CNO) and vehicle-control (CRE+CNO vs
+  CRE+SAL) comparisons AND have the same sign of ``log2FoldChange`` in
+  both.
+- Trajectory set = intersection of the 2 h and 4 h consensus sets.
+- Canonical effect size for trajectory plots: LFC from the vehicle-
+  control comparison (CRE+CNO vs CRE+SAL), since it directly captures
+  the chemogenetic activation.
+
+This module is import-only — no Streamlit, matplotlib, or filesystem
+side effects at import time, so it can be reused from notebooks and
+tests as well as from ``app.py``.
 """
 
 from __future__ import annotations

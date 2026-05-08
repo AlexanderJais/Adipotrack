@@ -1,7 +1,17 @@
 """Streamlit app: consensus DEG analysis across 2 h and 4 h CNO timepoints.
 
+Upload the four DEG tables (genetic and vehicle controls at each
+timepoint) via the sidebar; the app then produces consensus and
+trajectory tables, eight tabs of figures, an XLSX bundle of every
+table, and a downloadable plaintext debug log for bug reports.
+
 Run with:
+
     streamlit run app.py
+
+All heavy work (DEG parsing, sample-level QC, volcano PDF rendering)
+goes through ``@st.cache_data`` so reruns triggered by widget changes
+don't re-parse the upload bytes.
 """
 
 from __future__ import annotations

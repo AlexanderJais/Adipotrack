@@ -1,7 +1,11 @@
 """Publication-grade matplotlib figures.
 
-Style targets Nature/Cell-style figures: small sans-serif type, hairline axes,
-top/right spines removed, colorblind-safe Okabe-Ito palette, vector output.
+Style targets Nature/Cell-style figures: small sans-serif type, hairline
+axes, top/right spines removed, a colorblind-safe Okabe-Ito palette,
+and vector output. Each plot function applies the style via
+``apply_style()`` and returns a ``Figure``; rendering and PDF export
+happen in the caller (``app.py``). ``fig_to_bytes`` closes the figure
+by default to avoid matplotlib leaks across Streamlit reruns.
 """
 
 from __future__ import annotations

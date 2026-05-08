@@ -31,8 +31,9 @@ the app produces:
    per-class trajectory lines, signed-LFC heatmap, TF panel,
    TF-family enrichment dot plot, replicate PCA, sample correlation).
 5. **Downloads**: every figure as PDF (vector, type-42 fonts, editable in
-   Illustrator) and a single XLSX with the consensus, trajectory, and
-   TF-enrichment tables.
+   Illustrator), a single XLSX with the consensus, trajectory, and
+   TF-enrichment tables, and a plaintext debug-log snapshot for bug
+   reports.
 
 ## Quick start
 
@@ -54,7 +55,9 @@ the sidebar — once all four are present, the analysis runs.
 ## Input file format
 
 Despite the `.xls` extension, the DEG files are tab-separated UTF-8 text.
-The loader uses `pandas.read_csv(sep="\t", encoding="utf-8-sig")`.
+The loader uses `pandas.read_csv(sep="\t", encoding="utf-8-sig")` and
+sniffs the magic bytes first — a real binary `.xls` or `.xlsx` is
+rejected with a clear message rather than a cryptic decode error.
 
 ### Required columns
 
@@ -74,20 +77,31 @@ trajectory, and XLSX exports for biological context.
 
 ### Optional sample columns (used by the QC tab)
 
-Per-replicate normalized counts named `Cre_Q###` or `Wt_Q###`. The loader
-ignores anything ending in `_count` or `_fpkm` as well as group-mean
-columns named like `CRE_CNO4h` or `Wt_CNO4h`.
+Per-replicate normalized counts. Two naming schemes are recognized
+(see `SAMPLE_COL_PATTERNS` in `analysis.py`):
 
-**Group assignment** in `load_samples`:
+- `Cre_Q###` / `Wt_Q###` — original lab convention.
+- `<id>_<code><timepoint>` — current pipeline output, e.g. `S897_TC2`
+  or `T296_TS2`. The single letters encode the experimental group:
+  `T` = transgene (Cre), `W` = wildtype, `C` = CNO, `S` = saline. So
+  `S897_TC2` is sample 897, transgene + CNO at 2 h; `T296_TS2` is
+  sample 296, transgene + saline at 2 h.
 
-- Genetic-control files (`Cre_*` and `Wt_*` both present): `Cre_*` →
-  group A (CRE+CNO), `Wt_*` → group B (WT+CNO). Order of columns
-  doesn't matter.
-- Vehicle-control files (only `Cre_*` present): the loader assumes the
-  first half of detected sample columns are CRE+CNO and the second half
-  are CRE+SAL, matching the column-order convention in this dataset.
+Quantification suffixes (`*_count`, `*_fpkm`) and group-mean columns
+(`PnocCreCno2`, `WtCno2`, …) are skipped because they don't end in
+the trailing `<digits>` the pattern requires.
 
-If neither rule applies the loader raises with a clear `ValueError`.
+**Group assignment** (`load_samples`). Each detected column produces
+an uppercase token (`TC`, `WC`, `TS`, `CRE`, `WT`, …). The label
+strings passed in by the app (e.g. `"CRE+CNO_2h"` and `"WT+CNO_2h"`)
+are mapped to the same token space, and each sample is assigned to
+whichever label uniquely matches its token. This is order-independent
+— interleaved files group correctly.
+
+If token matching is ambiguous (legacy single-prefix file where every
+column reads `Cre_*`), the loader falls back to a first-half /
+second-half positional split. Files that resolve to neither raise
+with a `ValueError` listing the columns it tried.
 
 ## Pipeline details
 
@@ -165,7 +179,7 @@ For each uploaded file the QC tab runs:
 | Overview      | Pipeline summary, per-comparison funnel (tested / sig / up / down at the current thresholds), and trajectory class counts. |
 | Volcanoes     | One volcano per uploaded DEG file. Trajectory genes circled. Off-scale outliers shown as triangles at the boundary so they don't compress the panel. ↓/↑ counts in the corners. |
 | Overlap       | UpSet-style bar + dot plot of significant-gene overlaps across the four contrasts. The all-4 intersection is always pinned. |
-| Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot with median trajectory and gene labels (repelled with `adjustText`). |
+| Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot with one line per gene; the most extreme genes per class are labelled in a right-edge gutter (repelled with `adjustText`). |
 | Heatmap       | Signed-LFC heatmap of consensus genes across the 4 contrasts, with class swatch on the right and a horizontal colourbar at the bottom. |
 | TFs           | Per-class TF bars (gene · tf_family) plus the TF-family enrichment dot plot and table. |
 | QC            | Four sub-tabs (one per uploaded file) with PCA and pairwise correlation. |
@@ -184,6 +198,15 @@ provides a single `consensus_degs.xlsx` with up to four sheets:
 PDFs use type-42 fonts so all text is editable in Illustrator. Sans-serif
 body type is Arial (falls back to Helvetica → DejaVu Sans).
 
+A `Download debug log` button at the bottom of the sidebar produces
+`adipotrack_debug.log` — a plaintext snapshot of Python and library
+versions, the uploaded files (name, byte size, sha256 prefix, and any
+loader warnings), the current thresholds, the pipeline counts, the
+significance funnel, the trajectory class counts, and the top of the
+TF-enrichment table. Attaching it to a bug report is enough to
+reconstruct what the pipeline saw without sharing the original DEG
+files.
+
 ## Module layout
 
 | File              | Purpose                                                      |
@@ -191,6 +214,7 @@ body type is Arial (falls back to Helvetica → DejaVu Sans).
 | `analysis.py`     | Loaders, consensus and trajectory logic, TF enrichment, sample-level QC helpers (`compute_pca`, `sample_correlation`). |
 | `plots.py`        | Matplotlib plotting functions. Style is applied per-call via `apply_style()`; figures are returned (not saved) so the app can serve PDFs and inline previews. |
 | `app.py`          | Streamlit UI. File uploaders, sliders, tabs. Caches loaded DEG and sample tables with `@st.cache_data`. |
+| `debug_log.py`    | Builds the plaintext debug-log snapshot served by the sidebar download button. |
 | `requirements.txt`| Pinned-floor dependencies.                                   |
 
 ## Troubleshooting
@@ -200,15 +224,22 @@ body type is Arial (falls back to Helvetica → DejaVu Sans).
 typos or whitespace in the header line. The loader uses `utf-8-sig`
 encoding so a BOM won't trip the first-column check.
 
-**"Sample loader: no per-sample columns matched (Cre|Wt)_Q###"** —
-the QC tab couldn't find any sample columns matching that pattern. If
-your replicate IDs use a different scheme, the regex
-`SAMPLE_COL_RE` in `analysis.py` is the place to widen.
+**"DEG file looks like a binary Excel workbook"** — you uploaded a real
+`.xls` or `.xlsx` file rather than the tab-separated text the upstream
+pipeline emits (which carries a `.xls` extension by convention but is
+plain TSV). Re-export as TSV.
 
-**"Sample loader: single-prefix file with odd sample count"** — a
-vehicle-control file has an odd number of `Cre_Q###` columns; the loader
-can't infer where group A ends and group B begins. Either fix the file
-or pre-split.
+**"Sample loader: no per-sample count columns found. Headers seen: …"** —
+none of the columns matched the patterns in `SAMPLE_COL_PATTERNS`
+(`Cre_Q###` / `Wt_Q###` or `<id>_<code><tp>`). The full header is
+included in the error so you can see what the loader saw; widen the
+patterns in `analysis.py` if your replicate IDs use a different shape.
+
+**"Sample loader: cannot resolve groups for [...] into 'CRE+CNO_2h' /
+'CRE+SAL_2h'; odd sample count prevents a positional split"** —
+token matching was ambiguous (e.g. every column reads `Cre_*`) and
+the positional fallback can't split an odd number of columns. Either
+rename the columns to encode the group, or fix the column count.
 
 **Heatmap slider is missing** — when fewer than four trajectory genes
 exist, the heatmap shows them all without a slider.
@@ -224,11 +255,14 @@ Install `scipy` for the proper statistics.
 ## Defaults you can change
 
 - `padj_thresh` and `lfc_thresh` in the sidebar.
-- `min_family_size=3` in `tf_enrichment` (analysis.py) — minimum number
-  of foreground TFs before a family is tested.
-- `n_top_var=2000` in `compute_pca` — how many high-variance genes feed
-  into PCA.
-- `max_genes` slider in the heatmap tab.
+- `min_family_size=3` in `tf_enrichment` (`analysis.py`) — minimum
+  number of foreground TFs before a family is tested.
+- `n_top_var=2000` in `compute_pca` — how many high-variance genes
+  feed into PCA. Note that `var_explained` is reported relative to the
+  variance among these top-N genes, not the full transcriptome.
+- `log_cap=6.0` in `tf_enrichment_dot` (`plots.py`) — clamps the
+  `log₂(odds_ratio)` axis to ±6 (≈ 64-fold).
+- `max_genes` slider in the Heatmap tab.
 
 ## Conventions
 
