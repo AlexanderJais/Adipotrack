@@ -1,0 +1,254 @@
+"""Publication-grade matplotlib figures.
+
+Style targets Nature/Cell-style figures: small sans-serif type, hairline axes,
+top/right spines removed, colorblind-safe Okabe-Ito palette, vector output.
+"""
+
+from __future__ import annotations
+
+from io import BytesIO
+
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from analysis import CLASS_COLORS, CLASS_ORDER
+
+
+def apply_style() -> None:
+    mpl.rcParams.update({
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+        "font.size": 7,
+        "axes.titlesize": 8,
+        "axes.labelsize": 7,
+        "xtick.labelsize": 6,
+        "ytick.labelsize": 6,
+        "legend.fontsize": 6,
+        "axes.linewidth": 0.5,
+        "xtick.major.width": 0.5,
+        "ytick.major.width": 0.5,
+        "xtick.major.size": 2.5,
+        "ytick.major.size": 2.5,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "legend.frameon": False,
+        "pdf.fonttype": 42,  # editable text in Illustrator
+        "ps.fonttype": 42,
+        "svg.fonttype": "none",
+        "figure.dpi": 150,
+    })
+
+
+def fig_to_bytes(fig: plt.Figure, fmt: str = "pdf") -> bytes:
+    buf = BytesIO()
+    fig.savefig(buf, format=fmt, bbox_inches="tight")
+    return buf.getvalue()
+
+
+def volcano(
+    df: pd.DataFrame,
+    title: str,
+    highlight: set[str] | None = None,
+    padj_thresh: float = 0.05,
+    lfc_thresh: float = 0.0,
+    label_top_n: int = 12,
+) -> plt.Figure:
+    apply_style()
+    d = df.copy()
+    d["neglog10padj"] = -np.log10(d["padj"].clip(lower=1e-300))
+    sig = (d["padj"] < padj_thresh) & (d["log2FoldChange"].abs() >= lfc_thresh)
+
+    fig, ax = plt.subplots(figsize=(3.2, 3.0))
+    ax.scatter(d.loc[~sig, "log2FoldChange"], d.loc[~sig, "neglog10padj"],
+               s=3, c="#BBBBBB", alpha=0.5, linewidths=0, rasterized=True)
+    up = sig & (d["log2FoldChange"] > 0)
+    dn = sig & (d["log2FoldChange"] < 0)
+    ax.scatter(d.loc[up, "log2FoldChange"], d.loc[up, "neglog10padj"],
+               s=4, c="#D55E00", alpha=0.85, linewidths=0, rasterized=True)
+    ax.scatter(d.loc[dn, "log2FoldChange"], d.loc[dn, "neglog10padj"],
+               s=4, c="#0072B2", alpha=0.85, linewidths=0, rasterized=True)
+
+    if highlight:
+        h = d[d["gene_name"].isin(highlight)]
+        ax.scatter(h["log2FoldChange"], h["neglog10padj"],
+                   s=10, facecolors="none", edgecolors="black", linewidths=0.4)
+
+    ax.axhline(-np.log10(padj_thresh), color="black", lw=0.4, ls="--")
+    if lfc_thresh > 0:
+        ax.axvline(lfc_thresh, color="black", lw=0.4, ls="--")
+        ax.axvline(-lfc_thresh, color="black", lw=0.4, ls="--")
+
+    top = d[sig].nlargest(label_top_n, "neglog10padj")
+    for _, r in top.iterrows():
+        ax.text(r["log2FoldChange"], r["neglog10padj"], r["gene_name"],
+                fontsize=5, ha="left", va="bottom")
+
+    ax.set_xlabel("log$_2$ fold change")
+    ax.set_ylabel(r"$-\log_{10}$ adjusted $P$")
+    ax.set_title(title)
+    fig.tight_layout()
+    return fig
+
+
+def lfc_scatter(traj: pd.DataFrame) -> plt.Figure:
+    """LFC at 2h vs LFC at 4h for genes consensus at both timepoints."""
+    apply_style()
+    fig, ax = plt.subplots(figsize=(3.4, 3.4))
+    for cls in CLASS_ORDER:
+        sub = traj[traj["class"] == cls]
+        if sub.empty:
+            continue
+        ax.scatter(sub["lfc_2h"], sub["lfc_4h"],
+                   s=8, c=CLASS_COLORS[cls], alpha=0.85,
+                   linewidths=0, label=cls.replace("_", " "))
+
+    lim = float(np.nanmax(np.abs([traj["lfc_2h"], traj["lfc_4h"]]))) * 1.1
+    lim = max(lim, 1.0)
+    ax.plot([-lim, lim], [-lim, lim], color="black", lw=0.4, ls="--")
+    ax.axhline(0, color="black", lw=0.3)
+    ax.axvline(0, color="black", lw=0.3)
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_xlabel("log$_2$FC at 2 h (CRE+CNO vs CRE+SAL)")
+    ax.set_ylabel("log$_2$FC at 4 h (CRE+CNO vs CRE+SAL)")
+    ax.set_title(f"Consensus genes (n = {len(traj)})")
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
+    ax.set_aspect("equal")
+    fig.tight_layout()
+    return fig
+
+
+def trajectory_lines(traj: pd.DataFrame, label_top_n: int = 6) -> plt.Figure:
+    """One line per gene from 2h to 4h, faceted by class."""
+    apply_style()
+    classes = [c for c in CLASS_ORDER if (traj["class"] == c).any()]
+    n = len(classes)
+    if n == 0:
+        fig, ax = plt.subplots(figsize=(3, 2))
+        ax.text(0.5, 0.5, "No consensus genes", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    fig, axes = plt.subplots(1, n, figsize=(1.8 * n, 2.6), sharey=True)
+    if n == 1:
+        axes = [axes]
+    for ax, cls in zip(axes, classes):
+        sub = traj[traj["class"] == cls]
+        for _, r in sub.iterrows():
+            ax.plot([0, 1], [r["lfc_2h"], r["lfc_4h"]],
+                    color=CLASS_COLORS[cls], lw=0.4, alpha=0.5)
+        ax.axhline(0, color="black", lw=0.3)
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["2 h", "4 h"])
+        ax.set_title(f"{cls.replace('_', ' ')}\n(n = {len(sub)})")
+        # Label most-extreme genes
+        if not sub.empty:
+            extreme = sub.reindex(
+                sub["lfc_4h"].abs().sort_values(ascending=False).index
+            ).head(label_top_n)
+            for _, r in extreme.iterrows():
+                ax.text(1.02, r["lfc_4h"], r["gene_name"],
+                        fontsize=5, va="center")
+    axes[0].set_ylabel("log$_2$ fold change (CRE+CNO vs CRE+SAL)")
+    fig.tight_layout()
+    return fig
+
+
+def venn4(sets: dict[str, set[str]]) -> plt.Figure:
+    """Approximate 4-way overlap via UpSet-style bar chart (Venn4 is unreadable)."""
+    apply_style()
+    from itertools import combinations
+
+    keys = list(sets.keys())
+    rows = []
+    # All non-empty subsets
+    for r in range(1, len(keys) + 1):
+        for combo in combinations(keys, r):
+            inter = set.intersection(*(sets[k] for k in combo))
+            others = set.union(*(sets[k] for k in keys if k not in combo)) if r < len(keys) else set()
+            exclusive = inter - others
+            if exclusive:
+                rows.append((combo, len(exclusive)))
+    rows.sort(key=lambda x: -x[1])
+    rows = rows[:15]
+
+    fig, (ax_bar, ax_dot) = plt.subplots(
+        2, 1, figsize=(0.45 * len(rows) + 1.2, 3.2),
+        gridspec_kw={"height_ratios": [3, 1.2], "hspace": 0.05},
+        sharex=True,
+    )
+    xs = np.arange(len(rows))
+    ax_bar.bar(xs, [r[1] for r in rows], color="#333333", width=0.7)
+    for x, (_, n) in zip(xs, rows):
+        ax_bar.text(x, n, str(n), ha="center", va="bottom", fontsize=5)
+    ax_bar.set_ylabel("genes (exclusive)")
+
+    for yi, k in enumerate(keys):
+        for xi, (combo, _) in enumerate(rows):
+            on = k in combo
+            ax_dot.plot(xi, yi, "o",
+                        color="black" if on else "#DDDDDD",
+                        markersize=4)
+        # Connect dots in the same column
+    for xi, (combo, _) in enumerate(rows):
+        ys = [keys.index(k) for k in combo]
+        if len(ys) > 1:
+            ax_dot.plot([xi, xi], [min(ys), max(ys)], "-", color="black", lw=0.6)
+    ax_dot.set_yticks(range(len(keys)))
+    ax_dot.set_yticklabels(keys)
+    ax_dot.set_xticks([])
+    ax_dot.set_ylim(-0.5, len(keys) - 0.5)
+    ax_dot.invert_yaxis()
+    for spine in ("top", "right", "bottom", "left"):
+        ax_dot.spines[spine].set_visible(False)
+
+    fig.suptitle("Significant gene set overlaps", fontsize=8)
+    return fig
+
+
+def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
+    """Heatmap of LFC across the 4 comparisons for top consensus genes."""
+    apply_style()
+    if traj.empty:
+        fig, ax = plt.subplots(figsize=(3, 2))
+        ax.text(0.5, 0.5, "No consensus genes", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    d = traj.copy()
+    d["score"] = d[["lfc_2h", "lfc_4h"]].abs().max(axis=1)
+    d = d.sort_values(["class", "lfc_4h"], ascending=[True, False])
+    if len(d) > max_genes:
+        # Keep top-N per class by |lfc_4h|
+        d = (
+            d.groupby("class", group_keys=False)
+            .apply(lambda g: g.reindex(g["lfc_4h"].abs().sort_values(ascending=False).index)
+                   .head(max(2, max_genes // max(1, d["class"].nunique()))))
+        )
+
+    mat = d[[
+        "lfc_genetic_2h", "lfc_vehicle_2h",
+        "lfc_genetic_4h", "lfc_vehicle_4h",
+    ]].to_numpy()
+    col_labels = ["2h vs WT", "2h vs SAL", "4h vs WT", "4h vs SAL"]
+
+    vmax = float(np.nanmax(np.abs(mat))) if mat.size else 1.0
+    vmax = max(vmax, 0.5)
+
+    fig, ax = plt.subplots(figsize=(2.6, 0.12 * len(d) + 1.0))
+    im = ax.imshow(mat, aspect="auto", cmap="RdBu_r", vmin=-vmax, vmax=vmax)
+    ax.set_xticks(range(len(col_labels)))
+    ax.set_xticklabels(col_labels, rotation=45, ha="right")
+    ax.set_yticks(range(len(d)))
+    ax.set_yticklabels(d["gene_name"], fontsize=5)
+    ax.tick_params(left=False, bottom=False)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
+    cbar.set_label("log$_2$FC", fontsize=6)
+    cbar.ax.tick_params(labelsize=5)
+    cbar.outline.set_linewidth(0.4)
+
+    fig.tight_layout()
+    return fig

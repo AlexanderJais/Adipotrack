@@ -1,0 +1,7 @@
+streamlit>=1.30
+pandas>=2.0
+numpy>=1.24
+matplotlib>=3.7
+seaborn>=0.13
+matplotlib-venn>=0.11
+openpyxl>=3.1

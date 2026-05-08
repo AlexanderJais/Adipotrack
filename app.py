@@ -1,0 +1,173 @@
+"""Streamlit app: consensus DEG analysis across 2 h and 4 h CNO timepoints.
+
+Run with:
+    streamlit run app.py
+"""
+
+from __future__ import annotations
+
+import streamlit as st
+
+from analysis import (
+    TimepointInputs,
+    consensus_at_timepoint,
+    load_deg,
+    sig_set,
+    to_excel_bytes,
+    trajectories,
+)
+from plots import (
+    fig_to_bytes,
+    heatmap,
+    lfc_scatter,
+    trajectory_lines,
+    venn4,
+    volcano,
+)
+
+st.set_page_config(page_title="Consensus DEG explorer", layout="wide")
+st.title("Consensus DEG explorer — CRE+CNO chemogenetic activation")
+st.caption(
+    "Strict consensus = significant in BOTH genetic-control (vs WT+CNO) and "
+    "vehicle-control (vs CRE+SAL) AND concordant log₂FC sign. "
+    "Trajectory set = intersection of consensus genes at 2 h and 4 h."
+)
+
+with st.sidebar:
+    st.header("Thresholds")
+    padj_thresh = st.number_input("padj <", min_value=1e-6, max_value=0.5,
+                                  value=0.05, step=0.01, format="%.4f")
+    lfc_thresh = st.number_input("|log₂FC| ≥", min_value=0.0, max_value=5.0,
+                                 value=0.0, step=0.25)
+    st.header("Files")
+    f_2h_g = st.file_uploader("2 h — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt", "csv"])
+    f_2h_v = st.file_uploader("2 h — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt", "csv"])
+    f_4h_g = st.file_uploader("4 h — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt", "csv"])
+    f_4h_v = st.file_uploader("4 h — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt", "csv"])
+
+if not all([f_2h_g, f_2h_v, f_4h_g, f_4h_v]):
+    st.info("Upload all four DEG files in the sidebar to start.")
+    st.stop()
+
+
+@st.cache_data(show_spinner=False)
+def _load(file_bytes: bytes, name: str):
+    from io import BytesIO
+    return load_deg(BytesIO(file_bytes))
+
+
+with st.spinner("Loading DEG files…"):
+    deg_2h_g = _load(f_2h_g.getvalue(), f_2h_g.name)
+    deg_2h_v = _load(f_2h_v.getvalue(), f_2h_v.name)
+    deg_4h_g = _load(f_4h_g.getvalue(), f_4h_g.name)
+    deg_4h_v = _load(f_4h_v.getvalue(), f_4h_v.name)
+
+tp_2h = TimepointInputs(genetic=deg_2h_g, vehicle=deg_2h_v)
+tp_4h = TimepointInputs(genetic=deg_4h_g, vehicle=deg_4h_v)
+
+cons_2h = consensus_at_timepoint(tp_2h, padj_thresh, lfc_thresh)
+cons_4h = consensus_at_timepoint(tp_4h, padj_thresh, lfc_thresh)
+traj = trajectories(cons_2h, cons_4h)
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Consensus @ 2 h", len(cons_2h))
+c2.metric("Consensus @ 4 h", len(cons_4h))
+c3.metric("Trajectory genes (2h ∩ 4h)", len(traj))
+c4.metric("Reversed direction", int((traj["class"] == "reversed").sum()))
+
+tab_overview, tab_volcano, tab_overlap, tab_traj, tab_heatmap, tab_table = st.tabs(
+    ["Overview", "Volcanoes", "Overlap", "Trajectories", "Heatmap", "Tables"]
+)
+
+with tab_overview:
+    st.markdown(
+        """
+        **Pipeline**
+        1. Load four DEG tables (2 h × {genetic, vehicle}, 4 h × {genetic, vehicle}).
+        2. At each timepoint: keep genes with `padj < threshold` in both contrasts
+           and concordant log₂FC sign → **consensus set**.
+        3. Intersect 2 h and 4 h consensus sets → **trajectory set**.
+        4. Classify each trajectory gene by direction at each timepoint:
+           *stable up / damping up / stable down / damping down / reversed*.
+        5. Effect size for plots = log₂FC from CRE+CNO vs CRE+SAL (direct chemogenetic).
+        """
+    )
+    st.dataframe(
+        traj["class"].value_counts().rename("genes").to_frame(),
+        use_container_width=False,
+    )
+
+with tab_volcano:
+    panels = [
+        ("2 h — CRE+CNO vs WT+CNO", deg_2h_g),
+        ("2 h — CRE+CNO vs CRE+SAL", deg_2h_v),
+        ("4 h — CRE+CNO vs WT+CNO", deg_4h_g),
+        ("4 h — CRE+CNO vs CRE+SAL", deg_4h_v),
+    ]
+    highlight = set(traj["gene_name"])
+    cols = st.columns(2)
+    for i, (title, df) in enumerate(panels):
+        fig = volcano(df, title, highlight=highlight,
+                      padj_thresh=padj_thresh, lfc_thresh=lfc_thresh)
+        cols[i % 2].pyplot(fig, use_container_width=True)
+        cols[i % 2].download_button(
+            f"Download PDF — {title}", fig_to_bytes(fig, "pdf"),
+            file_name=f"volcano_{title.replace(' ', '_').replace('+', '')}.pdf",
+            mime="application/pdf", key=f"vd{i}",
+        )
+
+with tab_overlap:
+    sets = {
+        "2h vs WT":  sig_set(deg_2h_g, padj_thresh),
+        "2h vs SAL": sig_set(deg_2h_v, padj_thresh),
+        "4h vs WT":  sig_set(deg_4h_g, padj_thresh),
+        "4h vs SAL": sig_set(deg_4h_v, padj_thresh),
+    }
+    fig = venn4(sets)
+    st.pyplot(fig, use_container_width=False)
+    st.download_button("Download UpSet PDF", fig_to_bytes(fig, "pdf"),
+                       file_name="upset.pdf", mime="application/pdf")
+
+with tab_traj:
+    if traj.empty:
+        st.warning("No genes are consensus at both timepoints with current thresholds.")
+    else:
+        col1, col2 = st.columns([1, 1])
+        f1 = lfc_scatter(traj)
+        col1.pyplot(f1, use_container_width=True)
+        col1.download_button("Scatter PDF", fig_to_bytes(f1, "pdf"),
+                             file_name="lfc_scatter.pdf", mime="application/pdf")
+        f2 = trajectory_lines(traj)
+        col2.pyplot(f2, use_container_width=True)
+        col2.download_button("Trajectories PDF", fig_to_bytes(f2, "pdf"),
+                             file_name="trajectories.pdf", mime="application/pdf")
+
+with tab_heatmap:
+    if traj.empty:
+        st.warning("No genes to plot.")
+    else:
+        max_n = st.slider("Max genes shown", 10, min(300, len(traj)),
+                          min(60, len(traj)))
+        fig = heatmap(traj, max_genes=max_n)
+        st.pyplot(fig, use_container_width=False)
+        st.download_button("Heatmap PDF", fig_to_bytes(fig, "pdf"),
+                           file_name="heatmap.pdf", mime="application/pdf")
+
+with tab_table:
+    st.subheader("Consensus @ 2 h")
+    st.dataframe(cons_2h, use_container_width=True, height=240)
+    st.subheader("Consensus @ 4 h")
+    st.dataframe(cons_4h, use_container_width=True, height=240)
+    st.subheader("Trajectory set (consensus at both timepoints)")
+    st.dataframe(traj, use_container_width=True, height=320)
+
+    st.download_button(
+        "Download all tables (.xlsx)",
+        to_excel_bytes({
+            "consensus_2h": cons_2h,
+            "consensus_4h": cons_4h,
+            "trajectories": traj,
+        }),
+        file_name="consensus_degs.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
