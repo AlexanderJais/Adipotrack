@@ -26,6 +26,15 @@ import pandas as pd
 # Anchored on both ends so we don't match "Cre_Q927_count" or "Cre_Q927_fpkm".
 SAMPLE_COL_RE = re.compile(r"^(?:Cre|Wt)_Q\d+$", re.IGNORECASE)
 
+# Columns to *exclude* when auto-detecting per-sample count columns. Covers
+# the standard DEG/DESeq2 outputs and the annotation block carried by load_deg.
+NON_SAMPLE_COLS = {
+    "gene_id", "gene_name", "baseMean", "log2FoldChange", "lfcSE",
+    "stat", "pvalue", "padj", "pvalue_adjusted",
+    "gene_biotype", "gene_description", "tf_family",
+    "gene_chr", "gene_start", "gene_end", "gene_strand", "gene_length",
+}
+
 DEG_REQUIRED = ["gene_id", "gene_name", "log2FoldChange", "pvalue", "padj"]
 DEG_ANNOTATIONS = [
     "gene_biotype", "gene_description", "tf_family",
@@ -278,24 +287,45 @@ def load_samples(
     raw = pd.read_csv(source, sep="\t", low_memory=False, encoding="utf-8-sig")
     if "gene_name" not in raw.columns:
         raise ValueError("Sample loader: missing gene_name column")
+
+    # Two-pass detection. First, the strict legacy regex (Cre_Q###/Wt_Q###).
+    # If nothing matches, fall back to "any numeric column that isn't a known
+    # DEG/DESeq2/annotation field" — this picks up files whose per-sample
+    # columns use a different naming convention.
     sample_cols = [c for c in raw.columns if SAMPLE_COL_RE.fullmatch(c)]
     if not sample_cols:
-        raise ValueError("Sample loader: no per-sample columns matched (Cre|Wt)_Q###")
+        candidates = [c for c in raw.columns if c not in NON_SAMPLE_COLS]
+        sample_cols = [
+            c for c in candidates
+            if pd.to_numeric(raw[c], errors="coerce").notna().any()
+        ]
+    if not sample_cols:
+        raise ValueError(
+            "Sample loader: no per-sample count columns found. "
+            f"Headers seen: {list(raw.columns)}"
+        )
 
-    cre_cols = [c for c in sample_cols if c.lower().startswith("cre_")]
-    wt_cols = [c for c in sample_cols if c.lower().startswith("wt_")]
+    # Group assignment: prefer case-insensitive 'cre'/'wt' substring matching
+    # anywhere in the column name (handles Cre_Q927, Pnoc_Cre_CNO_R1, etc.).
+    # If only one of the two markers is present, fall back to splitting by
+    # column position (single-prefix files).
+    def _has(col: str, needle: str) -> bool:
+        return needle in col.lower()
+
+    cre_cols = [c for c in sample_cols if _has(c, "cre")]
+    wt_cols = [c for c in sample_cols if _has(c, "wt") and not _has(c, "cre")]
 
     if cre_cols and wt_cols:
-        # Mixed-prefix (genetic-control): label by prefix, ignore column order.
-        groups = []
-        for c in sample_cols:
-            groups.append(group_a_label if c.lower().startswith("cre_") else group_b_label)
+        groups = [
+            group_a_label if _has(c, "cre") else group_b_label
+            for c in sample_cols
+        ]
     else:
-        # Single-prefix (vehicle-control): fall back to position-based split.
         if len(sample_cols) % 2 != 0:
             raise ValueError(
                 f"Sample loader: single-prefix file with odd sample count "
-                f"({len(sample_cols)}); cannot infer groups."
+                f"({len(sample_cols)}); cannot infer groups. "
+                f"Detected columns: {sample_cols}"
             )
         half = len(sample_cols) // 2
         groups = [group_a_label] * half + [group_b_label] * half
