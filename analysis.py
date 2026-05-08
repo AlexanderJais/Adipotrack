@@ -212,10 +212,16 @@ def tf_enrichment(
         warnings.warn("scipy not installed; tf_enrichment returning empty result")
         return pd.DataFrame()
 
+    # Background of TFs that are NOT in the foreground. Foreground is a
+    # subset of the union of tested genes, so leaving it in the background
+    # would double-count the in-set TFs and bias the test toward the null.
     fg = foreground[is_tf(foreground)].copy()
-    bg = background[is_tf(background)].copy()
+    fg_names = set(fg["gene_name"].astype(str))
+    bg_excl = background[
+        is_tf(background) & ~background["gene_name"].astype(str).isin(fg_names)
+    ].copy()
     fg_total = len(fg)
-    bg_total = len(bg)
+    bg_total = len(bg_excl)
     families = (
         fg["tf_family"].value_counts()
         .loc[lambda s: s >= min_family_size]
@@ -226,9 +232,9 @@ def tf_enrichment(
     for fam in families:
         a = int((fg["tf_family"] == fam).sum())
         b = fg_total - a
-        c = int((bg["tf_family"] == fam).sum())
+        c = int((bg_excl["tf_family"] == fam).sum())
         d = bg_total - c
-        # One-sided "greater" — we care about over-representation only.
+        # One-sided "greater": we only care about over-representation.
         try:
             res = fisher_exact([[a, b], [c, d]], alternative="greater")
             odds, p = float(res.statistic), float(res.pvalue)
@@ -265,10 +271,13 @@ def load_samples(
 ) -> SampleData:
     """Load per-sample normalized-count columns from a DEG file.
 
-    Assumes the file lays out sample columns as [group_a × k, group_b × k]
-    in column order — which matches the convention in this dataset where
-    group-mean columns appear in the same order. Raises if the count of
-    detected sample columns isn't even.
+    Group assignment uses the column prefix when both ``Cre_*`` and ``Wt_*``
+    samples are present (genetic-control files): ``Cre_*`` → group_a,
+    ``Wt_*`` → group_b. When all detected samples share the same prefix
+    (vehicle-control files where every sample is ``Cre_*``) the loader
+    falls back to the original [first-half, second-half] convention. The
+    function raises with a clear message if neither rule produces a valid
+    even split.
     """
     raw = pd.read_csv(source, sep="\t", low_memory=False, encoding="utf-8-sig")
     if "gene_name" not in raw.columns:
@@ -276,11 +285,25 @@ def load_samples(
     sample_cols = [c for c in raw.columns if SAMPLE_COL_RE.fullmatch(c)]
     if not sample_cols:
         raise ValueError("Sample loader: no per-sample columns matched (Cre|Wt)_Q###")
-    if len(sample_cols) % 2 != 0:
-        raise ValueError(
-            f"Sample loader: expected even sample column count, got {len(sample_cols)}"
-        )
-    half = len(sample_cols) // 2
+
+    cre_cols = [c for c in sample_cols if c.lower().startswith("cre_")]
+    wt_cols = [c for c in sample_cols if c.lower().startswith("wt_")]
+
+    if cre_cols and wt_cols:
+        # Mixed-prefix (genetic-control): label by prefix, ignore column order.
+        groups = []
+        for c in sample_cols:
+            groups.append(group_a_label if c.lower().startswith("cre_") else group_b_label)
+    else:
+        # Single-prefix (vehicle-control): fall back to position-based split.
+        if len(sample_cols) % 2 != 0:
+            raise ValueError(
+                f"Sample loader: single-prefix file with odd sample count "
+                f"({len(sample_cols)}); cannot infer groups."
+            )
+        half = len(sample_cols) // 2
+        groups = [group_a_label] * half + [group_b_label] * half
+
     expr = (
         raw[["gene_name", *sample_cols]]
         .dropna(subset=["gene_name"])
@@ -288,10 +311,7 @@ def load_samples(
         .set_index("gene_name")
     )
     expr = expr.apply(pd.to_numeric, errors="coerce")
-    metadata = pd.DataFrame({
-        "sample": sample_cols,
-        "group": [group_a_label] * half + [group_b_label] * half,
-    })
+    metadata = pd.DataFrame({"sample": sample_cols, "group": groups})
     return SampleData(expr=expr, metadata=metadata)
 
 

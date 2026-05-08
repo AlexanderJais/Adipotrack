@@ -398,16 +398,48 @@ def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
 
     d = enrichment.head(top_n).copy()
     d = d.iloc[::-1]  # so smallest q ends up at the top
-    d["log_or"] = np.log2(d["odds_ratio"].replace(0, np.nan))
+
+    # Clamp odds ratios into a finite log-display range. Values beyond the
+    # cap are plotted at the cap with a small triangle to indicate
+    # off-scale (typical when a TF family is exclusive to the foreground →
+    # OR = +inf, or when n_fg = 0 → OR = 0). Anything not finite becomes
+    # NaN and is plotted at x=0 with a hollow marker.
+    or_clipped = d["odds_ratio"].replace([np.inf, -np.inf], np.nan)
+    log_or = np.log2(or_clipped.where(or_clipped > 0))
+    log_cap = 6.0  # ±6 in log2 space ≈ 64-fold enrichment; plenty of headroom
+    log_or_capped = log_or.clip(-log_cap, log_cap)
+    off_high = (d["odds_ratio"].to_numpy() == np.inf) | (log_or > log_cap)
+    off_low = (log_or < -log_cap)
+    nan_mask = log_or.isna().to_numpy() & ~off_high & ~off_low
+    d["log_or"] = log_or_capped
     d["mlog10q"] = -np.log10(d["q_value"].clip(lower=1e-300))
 
-    fig, ax = plt.subplots(figsize=(3.6, 0.22 * len(d) + 1.0))
+    fig, ax = plt.subplots(figsize=(3.8, 0.22 * len(d) + 1.0))
     sc = ax.scatter(
-        d["log_or"], np.arange(len(d)),
-        s=d["n_fg"] * 12 + 10,
-        c=d["mlog10q"], cmap="viridis",
+        d.loc[~nan_mask, "log_or"], np.arange(len(d))[~nan_mask],
+        s=d.loc[~nan_mask, "n_fg"] * 12 + 10,
+        c=d.loc[~nan_mask, "mlog10q"], cmap="viridis",
         edgecolor="black", linewidths=0.3,
     )
+    if nan_mask.any():
+        ax.scatter(
+            np.zeros(nan_mask.sum()), np.arange(len(d))[nan_mask],
+            s=d.loc[nan_mask, "n_fg"] * 12 + 10,
+            facecolors="none", edgecolor="grey", linewidths=0.3,
+        )
+    if off_high.any():
+        ax.scatter(
+            np.full(off_high.sum(), log_cap),
+            np.arange(len(d))[off_high],
+            marker=">", s=30, c="black",
+        )
+    if off_low.any():
+        ax.scatter(
+            np.full(off_low.sum(), -log_cap),
+            np.arange(len(d))[off_low],
+            marker="<", s=30, c="black",
+        )
+    ax.set_xlim(-log_cap * 1.05, log_cap * 1.05)
     ax.axvline(0, color="black", lw=0.3, ls="--")
     ax.set_yticks(np.arange(len(d)))
     ax.set_yticklabels(d["tf_family"], fontsize=6)
