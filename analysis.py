@@ -22,18 +22,18 @@ from typing import IO
 import numpy as np
 import pandas as pd
 
-# Per-sample normalized-count column names look like "Cre_Q927" / "Wt_Q919".
-# Anchored on both ends so we don't match "Cre_Q927_count" or "Cre_Q927_fpkm".
-SAMPLE_COL_RE = re.compile(r"^(?:Cre|Wt)_Q\d+$", re.IGNORECASE)
-
-# Columns to *exclude* when auto-detecting per-sample count columns. Covers
-# the standard DEG/DESeq2 outputs and the annotation block carried by load_deg.
-NON_SAMPLE_COLS = {
-    "gene_id", "gene_name", "baseMean", "log2FoldChange", "lfcSE",
-    "stat", "pvalue", "padj", "pvalue_adjusted",
-    "gene_biotype", "gene_description", "tf_family",
-    "gene_chr", "gene_start", "gene_end", "gene_strand", "gene_length",
-}
+# Per-sample normalized-count column-name shapes we know how to parse.
+# Anchored so we don't accidentally match quantification suffixes like
+# "S897_TC2_count" or "Cre_Q927_fpkm".
+#   - Cre_Q###/Wt_Q###  — original lab convention (group encoded as prefix).
+#   - S###_<code><tp>   — sample id + group letter code + timepoint, where
+#                         T=transgene/Cre, W=wildtype, C=CNO, S=saline
+#                         (e.g. S897_TC2 = transgene + CNO at 2 h).
+SAMPLE_COL_PATTERNS = (
+    re.compile(r"^(?:Cre|Wt)_Q\d+$", re.IGNORECASE),
+    re.compile(r"^S\d+_[A-Za-z]+\d+$"),
+)
+SAMPLE_COL_RE = SAMPLE_COL_PATTERNS[0]  # kept for backwards compat
 
 DEG_REQUIRED = ["gene_id", "gene_name", "log2FoldChange", "pvalue", "padj"]
 DEG_ANNOTATIONS = [
@@ -269,6 +269,40 @@ class SampleData:
     metadata: pd.DataFrame  # columns: sample, group
 
 
+def _column_token(col: str) -> str | None:
+    """Extract the group-encoding token from a sample column name.
+
+    Returns the uppercase letter code that identifies the sample group, or
+    ``None`` if the column does not match a known per-sample shape.
+    """
+    m = re.match(r"^S\d+_([A-Za-z]+)\d+$", col)
+    if m:
+        return m.group(1).upper()
+    m = re.match(r"^(Cre|Wt)_Q\d+$", col, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+    return None
+
+
+def _label_tokens(label: str) -> set[str]:
+    """All column tokens that could correspond to ``label``.
+
+    Generates both the legacy single-keyword form (``CRE``/``WT``) and the
+    two-letter S-style form (``T``/``W`` for treatment, ``C``/``S`` for
+    stimulus). Order-tolerant for the two-letter case (``TC`` and ``CT``).
+    """
+    L = label.upper()
+    out: set[str] = set()
+    if "CRE" in L: out.add("CRE")
+    if "WT" in L:  out.add("WT")
+    treat = "T" if "CRE" in L else ("W" if "WT" in L else "")
+    stim = "C" if "CNO" in L else ("S" if "SAL" in L else "")
+    if treat and stim:
+        out.add(treat + stim)
+        out.add(stim + treat)
+    return out
+
+
 def load_samples(
     source: str | IO[bytes],
     group_a_label: str,
@@ -276,56 +310,50 @@ def load_samples(
 ) -> SampleData:
     """Load per-sample normalized-count columns from a DEG file.
 
-    Group assignment uses the column prefix when both ``Cre_*`` and ``Wt_*``
-    samples are present (genetic-control files): ``Cre_*`` → group_a,
-    ``Wt_*`` → group_b. When all detected samples share the same prefix
-    (vehicle-control files where every sample is ``Cre_*``) the loader
-    falls back to the original [first-half, second-half] convention. The
-    function raises with a clear message if neither rule produces a valid
-    even split.
+    Sample columns are detected by name shape (see ``SAMPLE_COL_PATTERNS``).
+    Group assignment matches each column's encoded token against tokens
+    derived from the supplied labels; if that produces an unambiguous split
+    it is used, otherwise the loader falls back to splitting the columns in
+    half by position (the shape used by single-prefix files).
     """
     raw = pd.read_csv(source, sep="\t", low_memory=False, encoding="utf-8-sig")
     if "gene_name" not in raw.columns:
         raise ValueError("Sample loader: missing gene_name column")
 
-    # Two-pass detection. First, the strict legacy regex (Cre_Q###/Wt_Q###).
-    # If nothing matches, fall back to "any numeric column that isn't a known
-    # DEG/DESeq2/annotation field" — this picks up files whose per-sample
-    # columns use a different naming convention.
-    sample_cols = [c for c in raw.columns if SAMPLE_COL_RE.fullmatch(c)]
-    if not sample_cols:
-        candidates = [c for c in raw.columns if c not in NON_SAMPLE_COLS]
-        sample_cols = [
-            c for c in candidates
-            if pd.to_numeric(raw[c], errors="coerce").notna().any()
-        ]
+    sample_cols: list[str] = []
+    for pat in SAMPLE_COL_PATTERNS:
+        sample_cols = [c for c in raw.columns if pat.fullmatch(c)]
+        if sample_cols:
+            break
     if not sample_cols:
         raise ValueError(
             "Sample loader: no per-sample count columns found. "
             f"Headers seen: {list(raw.columns)}"
         )
 
-    # Group assignment: prefer case-insensitive 'cre'/'wt' substring matching
-    # anywhere in the column name (handles Cre_Q927, Pnoc_Cre_CNO_R1, etc.).
-    # If only one of the two markers is present, fall back to splitting by
-    # column position (single-prefix files).
-    def _has(col: str, needle: str) -> bool:
-        return needle in col.lower()
+    a_tokens = _label_tokens(group_a_label)
+    b_tokens = _label_tokens(group_b_label)
+    groups: list[str] | None = []
+    for c in sample_cols:
+        tok = _column_token(c)
+        in_a = tok in a_tokens
+        in_b = tok in b_tokens
+        if in_a and not in_b:
+            groups.append(group_a_label)
+        elif in_b and not in_a:
+            groups.append(group_b_label)
+        else:
+            groups = None
+            break
 
-    cre_cols = [c for c in sample_cols if _has(c, "cre")]
-    wt_cols = [c for c in sample_cols if _has(c, "wt") and not _has(c, "cre")]
-
-    if cre_cols and wt_cols:
-        groups = [
-            group_a_label if _has(c, "cre") else group_b_label
-            for c in sample_cols
-        ]
-    else:
+    if groups is None:
+        # Token matching was ambiguous (e.g. legacy single-prefix file where
+        # every column says "Cre"). Split by column position.
         if len(sample_cols) % 2 != 0:
             raise ValueError(
-                f"Sample loader: single-prefix file with odd sample count "
-                f"({len(sample_cols)}); cannot infer groups. "
-                f"Detected columns: {sample_cols}"
+                f"Sample loader: cannot resolve groups for {sample_cols} "
+                f"into {group_a_label!r} / {group_b_label!r}; "
+                f"odd sample count prevents a positional split."
             )
         half = len(sample_cols) // 2
         groups = [group_a_label] * half + [group_b_label] * half
