@@ -372,16 +372,16 @@ def tf_lfc_panel(traj: pd.DataFrame, max_per_class: int = 12) -> plt.Figure:
         y = np.arange(len(sub))
         ax.barh(y, sub["lfc_4h"], color=CLASS_COLORS[cls], height=0.7,
                 edgecolor="none")
-        # Annotate tf_family next to each bar's gene label
         ax.set_yticks(y)
         ax.set_yticklabels(
             [f"{g}  · {fam}" for g, fam in zip(sub["gene_name"], sub["tf_family"])],
             fontsize=5,
         )
         ax.axvline(0, color="black", lw=0.4)
-        ax.set_xlim(-x_lim, x_lim)
         ax.set_xlabel("log$_2$FC at 4 h")
         ax.set_title(f"{cls.replace('_', ' ')}\n(n = {len(sub)} of {(tfs['class'] == cls).sum()})")
+    # Hoisted out of the loop — sharex propagates to all panels in one go.
+    axes[0].set_xlim(-x_lim, x_lim)
     fig.tight_layout()
     return fig
 
@@ -618,11 +618,13 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
     d = d.sort_values(["class", "lfc_4h"], ascending=[True, False])
     if len(d) > max_genes:
         per_class = max(2, max_genes // max(1, d["class"].nunique()))
-        d = (
-            d.groupby("class", group_keys=False)
-            .apply(lambda g: g.reindex(g["lfc_4h"].abs().sort_values(ascending=False).index)
-                   .head(per_class))
-        )
+        # Iterate groups explicitly — avoids the pandas 2.2 FutureWarning
+        # about implicit `include_groups` in DataFrameGroupBy.apply.
+        chunks = []
+        for _, g in d.groupby("class", observed=True, sort=False):
+            top_idx = g["lfc_4h"].abs().sort_values(ascending=False).index[:per_class]
+            chunks.append(g.loc[top_idx])
+        d = pd.concat(chunks) if chunks else d.iloc[0:0]
 
     mat = d[[
         "lfc_genetic_2h", "lfc_vehicle_2h",

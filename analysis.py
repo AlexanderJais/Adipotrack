@@ -327,14 +327,26 @@ def compute_pca(
     (n_samples, n_components) and var_explained sums to ≤ 1.
     """
     X = expr.to_numpy(dtype=float)
-    X = np.where(np.isfinite(X), X, 0.0)
+    # Drop genes with any non-finite value rather than imputing zero — a
+    # NaN replaced by 0 then log-transformed looks like a real zero-count
+    # gene, which silently inflates apparent low-variance rows.
+    finite_rows = np.isfinite(X).all(axis=1)
+    X = X[finite_rows]
     if log_transform:
-        X = np.log2(X + 1.0)
-    # genes × samples → variance per gene → keep top-variance rows
+        X = np.log2(np.clip(X, a_min=0.0, a_max=None) + 1.0)
+    # Drop zero-variance genes — they carry no information for PCA and
+    # would otherwise survive the top-variance filter when n_genes < n_top_var.
+    var = X.var(axis=1)
+    nonzero_var = var > 0
+    X = X[nonzero_var]
+    var = var[nonzero_var]
     if X.shape[0] > n_top_var:
-        var = X.var(axis=1)
         top = np.argsort(var)[-n_top_var:]
         X = X[top]
+    if X.shape[0] == 0:
+        raise ValueError(
+            "compute_pca: no finite, non-constant genes left after filtering"
+        )
     # samples × genes for PCA
     Xs = X.T
     Xc = Xs - Xs.mean(axis=0)

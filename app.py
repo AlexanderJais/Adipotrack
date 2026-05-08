@@ -53,10 +53,10 @@ with st.sidebar:
     lfc_thresh = st.number_input("|log₂FC| ≥", min_value=0.0, max_value=5.0,
                                  value=0.0, step=0.25)
     st.header("Files")
-    f_2h_g = st.file_uploader("2 h — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt", "csv"])
-    f_2h_v = st.file_uploader("2 h — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt", "csv"])
-    f_4h_g = st.file_uploader("4 h — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt", "csv"])
-    f_4h_v = st.file_uploader("4 h — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt", "csv"])
+    f_2h_g = st.file_uploader("2 h — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt"])
+    f_2h_v = st.file_uploader("2 h — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt"])
+    f_4h_g = st.file_uploader("4 h — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt"])
+    f_4h_v = st.file_uploader("4 h — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt"])
 
 if not all([f_2h_g, f_2h_v, f_4h_g, f_4h_v]):
     st.info("Upload all four DEG files in the sidebar to start.")
@@ -75,6 +75,13 @@ def _load(file_bytes: bytes, _cache_key: str) -> "tuple":
         warnings.simplefilter("always")
         df = load_deg(BytesIO(file_bytes))
     return df, [str(w.message) for w in captured]
+
+
+@st.cache_data(show_spinner=False)
+def _load_samples_cached(file_bytes: bytes, _cache_key: str,
+                         a_label: str, b_label: str):
+    from io import BytesIO
+    return load_samples(BytesIO(file_bytes), a_label, b_label)
 
 
 with st.spinner("Loading DEG files…"):
@@ -97,6 +104,15 @@ tp_4h = TimepointInputs(genetic=deg_4h_g, vehicle=deg_4h_v)
 cons_2h = consensus_at_timepoint(tp_2h, padj_thresh, lfc_thresh)
 cons_4h = consensus_at_timepoint(tp_4h, padj_thresh, lfc_thresh)
 traj = trajectories(cons_2h, cons_4h)
+
+# Background pool + TF enrichment computed once so the Tables tab can reuse it.
+bg_union = (
+    pd.concat([deg_2h_g, deg_2h_v, deg_4h_g, deg_4h_v], ignore_index=True)
+    .drop_duplicates("gene_name")
+)
+tf_enrichment_df = (
+    tf_enrichment(traj, bg_union, min_family_size=3) if not traj.empty else pd.DataFrame()
+)
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Consensus @ 2 h", len(cons_2h))
@@ -131,7 +147,30 @@ with tab_overview:
         .rename("genes")
         .to_frame()
     )
-    st.dataframe(counts, use_container_width=False)
+
+    funnel_rows = []
+    for label, df in [
+        ("2 h: vs WT",  deg_2h_g),
+        ("2 h: vs SAL", deg_2h_v),
+        ("4 h: vs WT",  deg_4h_g),
+        ("4 h: vs SAL", deg_4h_v),
+    ]:
+        sig_mask = (df["padj"] < padj_thresh) & (df["log2FoldChange"].abs() >= lfc_thresh)
+        sig = df[sig_mask]
+        funnel_rows.append({
+            "comparison": label,
+            "tested": len(df),
+            "significant": int(sig_mask.sum()),
+            "up": int((sig["log2FoldChange"] > 0).sum()),
+            "down": int((sig["log2FoldChange"] < 0).sum()),
+        })
+    funnel = pd.DataFrame(funnel_rows)
+
+    cA, cB = st.columns([1.4, 1])
+    cA.subheader("Per-comparison significance funnel")
+    cA.dataframe(funnel, use_container_width=True, hide_index=True)
+    cB.subheader("Trajectory class counts")
+    cB.dataframe(counts, use_container_width=False)
 
 with tab_volcano:
     panels = [
@@ -201,11 +240,6 @@ with tab_tfs:
     if traj.empty:
         st.warning("No consensus genes — TF panel needs trajectory genes.")
     else:
-        # Background = union of all genes that were tested in the four DEG files.
-        bg_union = pd.concat(
-            [deg_2h_g, deg_2h_v, deg_4h_g, deg_4h_v],
-            ignore_index=True,
-        ).drop_duplicates("gene_name")
         n_tf_traj = int(is_tf(traj).sum())
         n_tf_bg = int(is_tf(bg_union).sum())
         st.caption(
@@ -222,24 +256,18 @@ with tab_tfs:
                              file_name="tf_panel.pdf",
                              mime="application/pdf")
 
-        enr = tf_enrichment(traj, bg_union, min_family_size=3)
-        if enr.empty:
+        if tf_enrichment_df.empty:
             col2.info("No TF families pass the size filter (≥3 in foreground).")
         else:
-            f_enr = tf_enrichment_dot(enr)
+            f_enr = tf_enrichment_dot(tf_enrichment_df)
             col2.pyplot(f_enr, use_container_width=True)
             col2.download_button("TF enrichment PDF", fig_to_bytes(f_enr, "pdf"),
                                  file_name="tf_enrichment.pdf",
                                  mime="application/pdf")
-            col2.dataframe(enr.round(4), use_container_width=True, height=240)
+            col2.dataframe(tf_enrichment_df.round(4),
+                           use_container_width=True, height=240)
 
 with tab_qc:
-    @st.cache_data(show_spinner=False)
-    def _load_samples_cached(file_bytes: bytes, _key: str,
-                             a_label: str, b_label: str):
-        from io import BytesIO
-        return load_samples(BytesIO(file_bytes), a_label, b_label)
-
     qc_files = [
         ("2 h: CRE+CNO vs WT+CNO",  f_2h_g, "CRE+CNO_2h", "WT+CNO_2h"),
         ("2 h: CRE+CNO vs CRE+SAL", f_2h_v, "CRE+CNO_2h", "CRE+SAL_2h"),
@@ -286,13 +314,16 @@ with tab_table:
     st.subheader("Trajectory set (consensus at both timepoints)")
     st.dataframe(traj, use_container_width=True, height=320)
 
+    sheets = {
+        "consensus_2h": cons_2h,
+        "consensus_4h": cons_4h,
+        "trajectories": traj,
+    }
+    if not tf_enrichment_df.empty:
+        sheets["tf_enrichment"] = tf_enrichment_df
     st.download_button(
         "Download all tables (.xlsx)",
-        to_excel_bytes({
-            "consensus_2h": cons_2h,
-            "consensus_4h": cons_4h,
-            "trajectories": traj,
-        }),
+        to_excel_bytes(sheets),
         file_name="consensus_degs.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
