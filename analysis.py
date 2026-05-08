@@ -275,7 +275,7 @@ def _column_token(col: str) -> str | None:
     Returns the uppercase letter code that identifies the sample group, or
     ``None`` if the column does not match a known per-sample shape.
     """
-    m = re.match(r"^S\d+_([A-Za-z]+)\d+$", col)
+    m = re.match(r"^[A-Za-z]+\d+_([A-Za-z]+)\d+$", col)
     if m:
         return m.group(1).upper()
     m = re.match(r"^(Cre|Wt)_Q\d+$", col, re.IGNORECASE)

@@ -406,7 +406,9 @@ def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
     off_high = (or_arr == np.inf) | (log_or > log_cap)
     off_low = log_or < -log_cap
     nan_mask = ~np.isfinite(log_or) & ~off_high & ~off_low
-    main_mask = ~nan_mask  # everything that has a finite (possibly clipped) value
+    # Off-scale points are drawn as triangles below; exclude them from the
+    # main scatter so they don't get a clipped dot at ±log_cap on top.
+    main_mask = ~(nan_mask | off_high | off_low)
 
     n_fg = d["n_fg"].to_numpy()
     mlog10q = -np.log10(d["q_value"].clip(lower=1e-300).to_numpy(dtype=float))
