@@ -22,9 +22,17 @@ from typing import IO
 import numpy as np
 import pandas as pd
 
-# Per-sample normalized-count column names look like "Cre_Q927" / "Wt_Q919".
-# Anchored on both ends so we don't match "Cre_Q927_count" or "Cre_Q927_fpkm".
-SAMPLE_COL_RE = re.compile(r"^(?:Cre|Wt)_Q\d+$", re.IGNORECASE)
+# Per-sample normalized-count column-name shapes we know how to parse.
+# Anchored so we don't accidentally match quantification suffixes like
+# "S897_TC2_count" or "Cre_Q927_fpkm".
+#   - Cre_Q###/Wt_Q###  — original lab convention (group encoded as prefix).
+#   - S###_<code><tp>   — sample id + group letter code + timepoint, where
+#                         T=transgene/Cre, W=wildtype, C=CNO, S=saline
+#                         (e.g. S897_TC2 = transgene + CNO at 2 h).
+SAMPLE_COL_PATTERNS = (
+    re.compile(r"^(?:Cre|Wt)_Q\d+$", re.IGNORECASE),
+    re.compile(r"^[A-Za-z]+\d+_[A-Za-z]+\d+$"),
+)
 
 DEG_REQUIRED = ["gene_id", "gene_name", "log2FoldChange", "pvalue", "padj"]
 DEG_ANNOTATIONS = [
@@ -33,8 +41,35 @@ DEG_ANNOTATIONS = [
 ]
 
 
+def _peek_magic(source: str | IO[bytes], n: int = 8) -> bytes:
+    """Read the first ``n`` bytes from ``source`` without disturbing position."""
+    if hasattr(source, "read") and hasattr(source, "seek"):
+        head = source.read(n)
+        source.seek(0)
+        return head
+    if isinstance(source, (str, bytes)):
+        try:
+            with open(source, "rb") as f:
+                return f.read(n)
+        except OSError:
+            return b""
+    return b""
+
+
 def load_deg(source: str | IO[bytes]) -> pd.DataFrame:
     """Load a DESeq2 DEG table (tab-separated, .xls extension is misleading)."""
+    head = _peek_magic(source)
+    if head.startswith(b"\xd0\xcf\x11\xe0"):
+        raise ValueError(
+            "DEG file looks like a real binary Excel workbook (.xls), not "
+            "the tab-separated text we expect. Re-export from the upstream "
+            "pipeline as TSV."
+        )
+    if head.startswith(b"PK\x03\x04"):
+        raise ValueError(
+            "DEG file looks like a binary .xlsx workbook, not the tab-"
+            "separated text we expect. Re-export as TSV."
+        )
     df = pd.read_csv(source, sep="\t", low_memory=False, encoding="utf-8-sig")
     missing = [c for c in DEG_REQUIRED if c not in df.columns]
     if missing:
@@ -188,6 +223,12 @@ def _bh_adjust(pvals: np.ndarray) -> np.ndarray:
     return out
 
 
+_TF_ENRICHMENT_COLS = [
+    "tf_family", "n_fg", "n_fg_total", "n_bg", "n_bg_total",
+    "odds_ratio", "p_value", "q_value",
+]
+
+
 def tf_enrichment(
     foreground: pd.DataFrame,
     background: pd.DataFrame,
@@ -198,19 +239,17 @@ def tf_enrichment(
 
     Both inputs need a `tf_family` column. Returns a DataFrame sorted by
     BH-adjusted q-value, with columns: tf_family, n_fg, n_fg_total,
-    n_bg, n_bg_total, odds_ratio, p_value, q_value.
+    n_bg, n_bg_total, odds_ratio, p_value, q_value. Always carries the same
+    column schema, even when no families pass the size filter.
     """
     if "tf_family" not in foreground.columns or "tf_family" not in background.columns:
-        return pd.DataFrame(columns=[
-            "tf_family", "n_fg", "n_fg_total", "n_bg", "n_bg_total",
-            "odds_ratio", "p_value", "q_value",
-        ])
+        return pd.DataFrame(columns=_TF_ENRICHMENT_COLS)
 
     try:
         from scipy.stats import fisher_exact
     except ImportError:
         warnings.warn("scipy not installed; tf_enrichment returning empty result")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=_TF_ENRICHMENT_COLS)
 
     # Background of TFs that are NOT in the foreground. Foreground is a
     # subset of the union of tested genes, so leaving it in the background
@@ -244,11 +283,11 @@ def tf_enrichment(
             "odds_ratio": odds,
             "p_value": p,
         })
+    if not rows:
+        return pd.DataFrame(columns=_TF_ENRICHMENT_COLS)
     out = pd.DataFrame(rows)
-    if not out.empty:
-        out["q_value"] = _bh_adjust(out["p_value"].to_numpy())
-        out = out.sort_values("q_value").reset_index(drop=True)
-    return out
+    out["q_value"] = _bh_adjust(out["p_value"].to_numpy())
+    return out.sort_values("q_value").reset_index(drop=True)
 
 
 # ---- Sample-level (replicate QC) -------------------------------------------
@@ -260,6 +299,40 @@ class SampleData:
     metadata: pd.DataFrame  # columns: sample, group
 
 
+def _column_token(col: str) -> str | None:
+    """Extract the group-encoding token from a sample column name.
+
+    Returns the uppercase letter code that identifies the sample group, or
+    ``None`` if the column does not match a known per-sample shape.
+    """
+    m = re.match(r"^[A-Za-z]+\d+_([A-Za-z]+)\d+$", col)
+    if m:
+        return m.group(1).upper()
+    m = re.match(r"^(Cre|Wt)_Q\d+$", col, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+    return None
+
+
+def _label_tokens(label: str) -> set[str]:
+    """All column tokens that could correspond to ``label``.
+
+    Generates both the legacy single-keyword form (``CRE``/``WT``) and the
+    two-letter S-style form (``T``/``W`` for treatment, ``C``/``S`` for
+    stimulus). Order-tolerant for the two-letter case (``TC`` and ``CT``).
+    """
+    L = label.upper()
+    out: set[str] = set()
+    if "CRE" in L: out.add("CRE")
+    if "WT" in L:  out.add("WT")
+    treat = "T" if "CRE" in L else ("W" if "WT" in L else "")
+    stim = "C" if "CNO" in L else ("S" if "SAL" in L else "")
+    if treat and stim:
+        out.add(treat + stim)
+        out.add(stim + treat)
+    return out
+
+
 def load_samples(
     source: str | IO[bytes],
     group_a_label: str,
@@ -267,35 +340,50 @@ def load_samples(
 ) -> SampleData:
     """Load per-sample normalized-count columns from a DEG file.
 
-    Group assignment uses the column prefix when both ``Cre_*`` and ``Wt_*``
-    samples are present (genetic-control files): ``Cre_*`` → group_a,
-    ``Wt_*`` → group_b. When all detected samples share the same prefix
-    (vehicle-control files where every sample is ``Cre_*``) the loader
-    falls back to the original [first-half, second-half] convention. The
-    function raises with a clear message if neither rule produces a valid
-    even split.
+    Sample columns are detected by name shape (see ``SAMPLE_COL_PATTERNS``).
+    Group assignment matches each column's encoded token against tokens
+    derived from the supplied labels; if that produces an unambiguous split
+    it is used, otherwise the loader falls back to splitting the columns in
+    half by position (the shape used by single-prefix files).
     """
     raw = pd.read_csv(source, sep="\t", low_memory=False, encoding="utf-8-sig")
     if "gene_name" not in raw.columns:
         raise ValueError("Sample loader: missing gene_name column")
-    sample_cols = [c for c in raw.columns if SAMPLE_COL_RE.fullmatch(c)]
+
+    sample_cols: list[str] = []
+    for pat in SAMPLE_COL_PATTERNS:
+        sample_cols = [c for c in raw.columns if pat.fullmatch(c)]
+        if sample_cols:
+            break
     if not sample_cols:
-        raise ValueError("Sample loader: no per-sample columns matched (Cre|Wt)_Q###")
+        raise ValueError(
+            "Sample loader: no per-sample count columns found. "
+            f"Headers seen: {list(raw.columns)}"
+        )
 
-    cre_cols = [c for c in sample_cols if c.lower().startswith("cre_")]
-    wt_cols = [c for c in sample_cols if c.lower().startswith("wt_")]
+    a_tokens = _label_tokens(group_a_label)
+    b_tokens = _label_tokens(group_b_label)
+    groups: list[str] | None = []
+    for c in sample_cols:
+        tok = _column_token(c)
+        in_a = tok in a_tokens
+        in_b = tok in b_tokens
+        if in_a and not in_b:
+            groups.append(group_a_label)
+        elif in_b and not in_a:
+            groups.append(group_b_label)
+        else:
+            groups = None
+            break
 
-    if cre_cols and wt_cols:
-        # Mixed-prefix (genetic-control): label by prefix, ignore column order.
-        groups = []
-        for c in sample_cols:
-            groups.append(group_a_label if c.lower().startswith("cre_") else group_b_label)
-    else:
-        # Single-prefix (vehicle-control): fall back to position-based split.
+    if groups is None:
+        # Token matching was ambiguous (e.g. legacy single-prefix file where
+        # every column says "Cre"). Split by column position.
         if len(sample_cols) % 2 != 0:
             raise ValueError(
-                f"Sample loader: single-prefix file with odd sample count "
-                f"({len(sample_cols)}); cannot infer groups."
+                f"Sample loader: cannot resolve groups for {sample_cols} "
+                f"into {group_a_label!r} / {group_b_label!r}; "
+                f"odd sample count prevents a positional split."
             )
         half = len(sample_cols) // 2
         groups = [group_a_label] * half + [group_b_label] * half
@@ -320,7 +408,11 @@ def compute_pca(
     """PCA of samples on (optionally log-transformed) top-variance genes.
 
     Returns (scores, var_explained) where scores has shape
-    (n_samples, n_components) and var_explained sums to ≤ 1.
+    (n_samples, n_components) and var_explained sums to ≤ 1. Note that
+    `var_explained` is the fraction *of variance among the genes used*
+    (post top-variance filtering), not of the full transcriptome — this is
+    the standard QC reading but worth keeping in mind when comparing across
+    runs with different gene-count thresholds.
     """
     X = expr.to_numpy(dtype=float)
     # Drop genes with any non-finite value rather than imputing zero — a
@@ -364,6 +456,17 @@ def sample_correlation(expr: pd.DataFrame, method: str = "pearson") -> pd.DataFr
 
 
 def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
+    # Excel caps sheet names at 31 chars. Detect collisions before writing
+    # so a longer-named sheet can't silently overwrite an earlier one.
+    seen: dict[str, str] = {}
+    for name in sheets:
+        truncated = name[:31]
+        if truncated in seen:
+            raise ValueError(
+                f"Sheet name collision after 31-char truncation: "
+                f"{seen[truncated]!r} and {name!r} both become {truncated!r}"
+            )
+        seen[truncated] = name
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         for name, df in sheets.items():

@@ -41,9 +41,14 @@ def apply_style() -> None:
     })
 
 
-def fig_to_bytes(fig: plt.Figure, fmt: str = "pdf") -> bytes:
+def fig_to_bytes(fig: plt.Figure, fmt: str = "pdf", close: bool = True) -> bytes:
+    """Render ``fig`` to bytes; closes it by default to avoid leaks across
+    Streamlit reruns. Pass ``close=False`` if you need to keep using the
+    figure (e.g. for a follow-up ``st.pyplot`` call)."""
     buf = BytesIO()
     fig.savefig(buf, format=fmt, bbox_inches="tight")
+    if close:
+        plt.close(fig)
     return buf.getvalue()
 
 
@@ -153,8 +158,8 @@ def volcano(
 
     ax.set_xlim(-x_lim, x_lim)
     ax.set_ylim(0, y_lim)
-    ax.set_xlabel("log$_2$ fold change")
-    ax.set_ylabel(r"$-\log_{10}$ adjusted $P$")
+    ax.set_xlabel("log₂ fold change")
+    ax.set_ylabel("−log₁₀ adjusted P")
     ax.set_title(title)
     fig.tight_layout()
     return fig
@@ -195,15 +200,15 @@ def lfc_scatter(traj: pd.DataFrame) -> plt.Figure:
         try:
             from scipy.stats import spearmanr
             rho, _ = spearmanr(traj["lfc_2h"], traj["lfc_4h"])
-            rho_text = rf"Spearman $\rho$ = {rho:.2f}"
+            rho_text = f"Spearman ρ = {rho:.2f}"
         except ImportError:
             r = float(np.corrcoef(traj["lfc_2h"], traj["lfc_4h"])[0, 1])
-            rho_text = rf"Pearson $r$ = {r:.2f}"
+            rho_text = f"Pearson r = {r:.2f}"
         ax.text(0.03, 0.97, rho_text, transform=ax.transAxes,
                 ha="left", va="top", fontsize=6)
 
-    ax.set_xlabel("log$_2$FC at 2 h (CRE+CNO vs CRE+SAL)")
-    ax.set_ylabel("log$_2$FC at 4 h (CRE+CNO vs CRE+SAL)")
+    ax.set_xlabel("log₂FC at 2 h (CRE+CNO vs CRE+SAL)")
+    ax.set_ylabel("log₂FC at 4 h (CRE+CNO vs CRE+SAL)")
     ax.set_title(f"Trajectory genes (n = {len(traj)})")
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
     ax.set_aspect("equal")
@@ -220,11 +225,8 @@ def trajectory_lines(
     """One line per gene from 2 h to 4 h, faceted by class.
 
     Each panel reserves a right-hand label gutter (x = 1.0 → 1.6) so labels
-    can be repelled outward without colliding with the trajectories. The
-    per-class median is drawn on top with a white halo for visibility.
+    can be repelled outward without colliding with the trajectories.
     """
-    import matplotlib.patheffects as pe
-
     apply_style()
     classes = [c for c in CLASS_ORDER if (traj["class"] == c).any()]
     n = len(classes)
@@ -261,20 +263,6 @@ def trajectory_lines(
             ax.plot([0, 1], [r["lfc_2h"], r["lfc_4h"]],
                     color=CLASS_COLORS[cls], lw=0.5, alpha=0.45,
                     zorder=2)
-
-        # Median trajectory with white halo
-        if len(sub) >= 3:
-            med = [sub["lfc_2h"].median(), sub["lfc_4h"].median()]
-            (line,) = ax.plot(
-                [0, 1], med, color="black", lw=1.6,
-                marker="o", markersize=4,
-                markerfacecolor="white", markeredgewidth=0.8,
-                zorder=5,
-            )
-            line.set_path_effects([
-                pe.Stroke(linewidth=3.0, foreground="white"),
-                pe.Normal(),
-            ])
 
         ax.axhline(0, color="black", lw=0.3, zorder=1)
         ax.set_xticks([0, 1])
@@ -336,7 +324,7 @@ def trajectory_lines(
                 # spacing them at a minimum vertical separation.
                 _stack_labels(texts, ax, min_gap=y_lim * 0.06)
 
-    axes[0].set_ylabel("log$_2$ fold change (CRE+CNO vs CRE+SAL)")
+    axes[0].set_ylabel("log₂ fold change (CRE+CNO vs CRE+SAL)")
     fig.tight_layout()
     return fig
 
@@ -388,7 +376,7 @@ def tf_lfc_panel(traj: pd.DataFrame, max_per_class: int = 12) -> plt.Figure:
             fontsize=5,
         )
         ax.axvline(0, color="black", lw=0.4)
-        ax.set_xlabel("log$_2$FC at 4 h")
+        ax.set_xlabel("log₂FC at 4 h")
         ax.set_title(f"{cls.replace('_', ' ')}\n(n = {len(sub)} of {(tfs['class'] == cls).sum()})")
     # Hoisted out of the loop — sharex propagates to all panels in one go.
     axes[0].set_xlim(-x_lim, x_lim)
@@ -423,7 +411,9 @@ def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
     off_high = (or_arr == np.inf) | (log_or > log_cap)
     off_low = log_or < -log_cap
     nan_mask = ~np.isfinite(log_or) & ~off_high & ~off_low
-    main_mask = ~nan_mask  # everything that has a finite (possibly clipped) value
+    # Off-scale points are drawn as triangles below; exclude them from the
+    # main scatter so they don't get a clipped dot at ±log_cap on top.
+    main_mask = ~(nan_mask | off_high | off_low)
 
     n_fg = d["n_fg"].to_numpy()
     mlog10q = -np.log10(d["q_value"].clip(lower=1e-300).to_numpy(dtype=float))
@@ -456,11 +446,11 @@ def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
     ax.axvline(0, color="black", lw=0.3, ls="--")
     ax.set_yticks(np.arange(len(d)))
     ax.set_yticklabels(d["tf_family"], fontsize=6)
-    ax.set_xlabel("log$_2$ odds ratio (foreground vs background)")
+    ax.set_xlabel("log₂ odds ratio (foreground vs background)")
     ax.set_title(f"TF-family enrichment (top {len(d)})")
 
     cbar = fig.colorbar(sc, ax=ax, fraction=0.04, pad=0.04)
-    cbar.set_label(r"$-\log_{10}\,q$", fontsize=6)
+    cbar.set_label("−log₁₀ q", fontsize=6)
     cbar.ax.tick_params(labelsize=5)
     cbar.outline.set_linewidth(0.4)
 
@@ -559,8 +549,9 @@ def _stack_labels(texts, ax, min_gap: float) -> None:
         last_y = new_y
 
 
-def venn4(sets: dict[str, set[str]], max_rows: int = 20) -> plt.Figure:
-    """Approximate N-way overlap via UpSet-style bar chart (Venn4 is unreadable).
+def upset_plot(sets: dict[str, set[str]], max_rows: int = 20) -> plt.Figure:
+    """N-way overlap rendered as an UpSet-style bar chart (a 4-way Venn is
+    unreadable).
 
     The all-N intersection is always pinned at the front so it's never dropped
     by the size cap; remaining cells follow in size-descending order.
@@ -703,7 +694,7 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
         orientation="horizontal",
         fraction=0.05, pad=0.16, aspect=30, shrink=0.6,
     )
-    cbar.set_label("log$_2$FC", fontsize=6)
+    cbar.set_label("log₂FC", fontsize=6)
     cbar.ax.tick_params(labelsize=5)
     cbar.outline.set_linewidth(0.4)
 
