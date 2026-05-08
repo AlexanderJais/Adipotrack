@@ -137,7 +137,7 @@ with tab_overview:
            and concordant log₂FC sign → **consensus set**.
         3. Intersect 2 h and 4 h consensus sets → **trajectory set**.
         4. Classify each trajectory gene by direction at each timepoint:
-           *stable up / damping up / stable down / damping down / reversed*.
+           *sustained up / transient up / sustained down / transient down / reversed*.
         5. Effect size for plots = log₂FC from CRE+CNO vs CRE+SAL (direct chemogenetic).
         """
     )

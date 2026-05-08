@@ -134,7 +134,7 @@ def trajectories(
     same_dn = (s2 < 0) & (s4 < 0)
     j["class"] = np.select(
         [same_up & grow, same_up & ~grow, same_dn & grow, same_dn & ~grow],
-        ["stable_up", "damping_up", "stable_down", "damping_down"],
+        ["sustained_up", "transient_up", "sustained_down", "transient_down"],
         default="reversed",
     )
     j["delta_lfc"] = j["lfc_4h"] - j["lfc_2h"]
@@ -152,17 +152,17 @@ def trajectories(
 
 
 CLASS_ORDER = [
-    "stable_up", "damping_up",
-    "stable_down", "damping_down",
+    "sustained_up", "transient_up",
+    "sustained_down", "transient_down",
     "reversed",
 ]
 
 CLASS_COLORS = {
-    "stable_up":    "#D55E00",  # vermillion
-    "damping_up":   "#E69F00",  # orange
-    "stable_down":  "#0072B2",  # blue
-    "damping_down": "#56B4E9",  # sky blue
-    "reversed":     "#999999",  # grey
+    "sustained_up":   "#D55E00",  # vermillion
+    "transient_up":   "#E69F00",  # orange
+    "sustained_down": "#0072B2",  # blue
+    "transient_down": "#56B4E9",  # sky blue
+    "reversed":       "#999999",  # grey
 }
 
 

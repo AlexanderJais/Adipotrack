@@ -21,10 +21,12 @@ the app produces:
 1. **Strict consensus** per timepoint: genes significant in *both* control
    comparisons with concordant `log2FoldChange` sign.
 2. **Trajectory set**: genes that are strict-consensus at *both* 2 h and 4 h.
-3. Trajectory **classes** per gene: `stable_up`, `damping_up`, `stable_down`,
-   `damping_down`, `reversed` (based on direction and magnitude change
-   between 2 h and 4 h, using the vehicle-control LFC as the canonical
-   effect size).
+3. Trajectory **classes** per gene: `sustained_up`, `transient_up`,
+   `sustained_down`, `transient_down`, `reversed` (based on direction
+   and magnitude change between 2 h and 4 h, using the vehicle-control
+   LFC as the canonical effect size). "Sustained" means the response is
+   maintained or strengthens at 4 h; "transient" means the response is
+   present at 2 h but weakens by 4 h.
 4. **Figures** (volcanoes, UpSet-style overlap, LFC-2h-vs-4h scatter,
    per-class trajectory lines, signed-LFC heatmap, TF panel,
    TF-family enrichment dot plot, replicate PCA, sample correlation).
@@ -119,13 +121,13 @@ the chemogenetic activation.
 For each gene `g` in the trajectory set, with `lfc_2h` and `lfc_4h` from
 the vehicle-control comparison:
 
-| Class            | Rule                                                          |
-|------------------|---------------------------------------------------------------|
-| `stable_up`      | `lfc_2h > 0` and `lfc_4h > 0` and `|lfc_4h| ≥ |lfc_2h|`        |
-| `damping_up`     | `lfc_2h > 0` and `lfc_4h > 0` and `|lfc_4h| < |lfc_2h|`        |
-| `stable_down`    | `lfc_2h < 0` and `lfc_4h < 0` and `|lfc_4h| ≥ |lfc_2h|`        |
-| `damping_down`   | `lfc_2h < 0` and `lfc_4h < 0` and `|lfc_4h| < |lfc_2h|`        |
-| `reversed`       | sign(`lfc_2h`) ≠ sign(`lfc_4h`) (rare given concordance gate) |
+| Class             | Rule                                                          |
+|-------------------|---------------------------------------------------------------|
+| `sustained_up`    | `lfc_2h > 0` and `lfc_4h > 0` and `|lfc_4h| ≥ |lfc_2h|`        |
+| `transient_up`    | `lfc_2h > 0` and `lfc_4h > 0` and `|lfc_4h| < |lfc_2h|`        |
+| `sustained_down`  | `lfc_2h < 0` and `lfc_4h < 0` and `|lfc_4h| ≥ |lfc_2h|`        |
+| `transient_down`  | `lfc_2h < 0` and `lfc_4h < 0` and `|lfc_4h| < |lfc_2h|`        |
+| `reversed`        | sign(`lfc_2h`) ≠ sign(`lfc_4h`) (rare given concordance gate) |
 
 Class is stored as an ordered `pandas.Categorical` so downstream
 groupby/sort operations preserve the canonical ordering.
@@ -234,4 +236,4 @@ Install `scipy` for the proper statistics.
 - All `log2FoldChange` values are CRE relative to control (positive = up
   in CRE+CNO, negative = up in control). The vehicle-control LFC is the
   canonical effect size for trajectory plots.
-- Class names use snake_case in code, "stable up" etc. in figure titles.
+- Class names use snake_case in code, "sustained up" etc. in figure titles.
