@@ -19,6 +19,7 @@ from plots import (
     fig_to_bytes,
     heatmap,
     lfc_scatter,
+    pathway_enrichment_dot,
     sample_corr_heatmap,
     tf_enrichment_dot,
     tf_lfc_panel,
@@ -206,6 +207,35 @@ def test_tf_enrichment_dot_no_double_render_for_offscale():
         "main scatter should contain exactly one in-range row; if it has more, "
         "off-scale points are being double-rendered (audit bug #2)"
     )
+    plt.close(fig)
+
+
+def test_pathway_enrichment_dot_runs():
+    enr = pd.DataFrame({
+        "set_name":   ["A_LONG_PATHWAY_NAME_THAT_WILL_BE_TRUNCATED_BECAUSE_IT_EXCEEDS_THE_LIMIT_BY_A_LOT", "PATHWAY_B", "PATHWAY_C"],
+        "n_fg":       [5, 3, 2],
+        "n_fg_total": [10, 10, 10],
+        "n_bg":       [10, 30, 50],
+        "n_bg_total": [1000, 1000, 1000],
+        "odds_ratio": [10.0, 2.0, 0.5],
+        "p_value":    [1e-4, 0.05, 0.5],
+        "q_value":    [1e-4, 0.05, 0.5],
+    })
+    fig = pathway_enrichment_dot(enr, top_n=3)
+    ax = fig.axes[0]
+    # Long names get truncated with an ellipsis in the y-tick label.
+    yticks = [t.get_text() for t in ax.get_yticklabels()]
+    assert any(label.endswith("…") for label in yticks)
+    plt.close(fig)
+
+
+def test_pathway_enrichment_dot_empty():
+    empty = pd.DataFrame(columns=[
+        "set_name", "n_fg", "n_fg_total", "n_bg", "n_bg_total",
+        "odds_ratio", "p_value", "q_value",
+    ])
+    fig = pathway_enrichment_dot(empty)
+    assert isinstance(fig, plt.Figure)
     plt.close(fig)
 
 

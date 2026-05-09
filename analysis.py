@@ -296,6 +296,128 @@ def tf_enrichment(
     return out.sort_values("q_value").reset_index(drop=True)
 
 
+# ---- Pathway / gene-set over-representation -------------------------------
+
+
+_PATHWAY_ENRICHMENT_COLS = [
+    "set_name", "n_fg", "n_fg_total", "n_bg", "n_bg_total",
+    "odds_ratio", "p_value", "q_value",
+]
+
+
+def read_gmt(source: str | IO[bytes] | IO[str]) -> dict[str, set[str]]:
+    """Parse a GMT (Gene Matrix Transposed) file.
+
+    Each non-blank line is ``<set_name>\\t<description>\\t<gene>\\t<gene>…``.
+    Returns ``{set_name: {gene_name, …}}``. Lines starting with ``#`` are
+    skipped. Description column is dropped. Bytes input is decoded as
+    UTF-8 with BOM tolerance.
+    """
+    if hasattr(source, "read"):
+        data = source.read()
+        if isinstance(data, bytes):
+            data = data.decode("utf-8-sig")
+    elif isinstance(source, str):
+        try:
+            with open(source, encoding="utf-8-sig") as f:
+                data = f.read()
+        except (OSError, ValueError):
+            # Treat as raw GMT text if the path doesn't resolve.
+            data = source
+    else:
+        raise TypeError(f"read_gmt: unsupported source type {type(source).__name__}")
+
+    sets: dict[str, set[str]] = {}
+    for line in data.splitlines():
+        line = line.rstrip("\r")
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        name = parts[0].strip()
+        if not name:
+            continue
+        members = {g.strip() for g in parts[2:] if g.strip()}
+        if members:
+            # If the same set name appears twice, merge (defensive — most
+            # GMT files don't have duplicates but it's cheap to be safe).
+            sets.setdefault(name, set()).update(members)
+    return sets
+
+
+def pathway_enrichment(
+    foreground: pd.DataFrame,
+    background: pd.DataFrame,
+    gene_sets: dict[str, set[str]],
+    min_set_size: int = 3,
+    max_set_size: int = 500,
+) -> pd.DataFrame:
+    """Over-representation of pathway / gene-set membership in foreground vs
+    background.
+
+    Both inputs need a ``gene_name`` column. ``gene_sets`` maps set name to
+    a set of gene symbols (typically loaded by :func:`read_gmt`). The
+    universe is foreground ∪ background; gene-set members outside the
+    universe are dropped before testing, matching the standard ORA
+    convention. Background excludes the foreground (same logic as
+    :func:`tf_enrichment`) so in-set genes aren't double-counted.
+
+    Sets whose universe-restricted size falls outside
+    ``[min_set_size, max_set_size]`` are skipped, as are sets with zero
+    foreground overlap (their ``odds_ratio`` is 0 — no signal worth
+    correcting against). Returns a DataFrame sorted by BH-adjusted
+    q-value with the same column schema as :func:`tf_enrichment` apart
+    from the leading ``set_name`` (instead of ``tf_family``).
+    """
+    if not gene_sets:
+        return pd.DataFrame(columns=_PATHWAY_ENRICHMENT_COLS)
+    if "gene_name" not in foreground.columns or "gene_name" not in background.columns:
+        return pd.DataFrame(columns=_PATHWAY_ENRICHMENT_COLS)
+
+    try:
+        from scipy.stats import fisher_exact
+    except ImportError:
+        warnings.warn(
+            "scipy not installed; pathway_enrichment returning empty result"
+        )
+        return pd.DataFrame(columns=_PATHWAY_ENRICHMENT_COLS)
+
+    fg_genes = set(foreground["gene_name"].astype(str))
+    bg_genes = set(background["gene_name"].astype(str)) - fg_genes
+    fg_total = len(fg_genes)
+    bg_total = len(bg_genes)
+    if fg_total == 0 or bg_total == 0:
+        return pd.DataFrame(columns=_PATHWAY_ENRICHMENT_COLS)
+    universe = fg_genes | bg_genes
+
+    rows = []
+    for name, members in gene_sets.items():
+        in_universe = members & universe
+        size = len(in_universe)
+        if size < min_set_size or size > max_set_size:
+            continue
+        a = len(in_universe & fg_genes)
+        if a == 0:
+            continue
+        b = fg_total - a
+        c = len(in_universe & bg_genes)
+        d = bg_total - c
+        res = fisher_exact([[a, b], [c, d]], alternative="greater")
+        rows.append({
+            "set_name": name,
+            "n_fg": a, "n_fg_total": fg_total,
+            "n_bg": c, "n_bg_total": bg_total,
+            "odds_ratio": float(res.statistic),
+            "p_value": float(res.pvalue),
+        })
+    if not rows:
+        return pd.DataFrame(columns=_PATHWAY_ENRICHMENT_COLS)
+    out = pd.DataFrame(rows)
+    out["q_value"] = _bh_adjust(out["p_value"].to_numpy())
+    return out.sort_values("q_value").reset_index(drop=True)
+
+
 # ---- Sample-level (replicate QC) -------------------------------------------
 
 @dataclass

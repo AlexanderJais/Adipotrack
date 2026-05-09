@@ -25,6 +25,8 @@ from analysis import (
     load_deg,
     load_samples,
     lookup_gene,
+    pathway_enrichment,
+    read_gmt,
     sample_correlation,
     sig_set,
     tf_enrichment,
@@ -552,3 +554,134 @@ class TestLookupGene:
         r = lookup_gene("Fos", contrasts, c2, c4, traj)
         assert r.annotations.get("tf_family") == "bZIP"
         assert r.annotations.get("gene_id") == "ENSMUSG01"
+
+
+# ---- read_gmt -------------------------------------------------------------
+
+
+class TestReadGmt:
+    def test_basic_parse(self):
+        text = (
+            "HALLMARK_HYPOXIA\thttp://msigdb/hypoxia\tFos\tJun\tHif1a\n"
+            "HALLMARK_INFLAMMATORY\tdesc\tNfkb1\tIl6\tTnf\tJun\n"
+        )
+        sets = read_gmt(io.BytesIO(text.encode()))
+        assert sets["HALLMARK_HYPOXIA"] == {"Fos", "Jun", "Hif1a"}
+        assert sets["HALLMARK_INFLAMMATORY"] == {"Nfkb1", "Il6", "Tnf", "Jun"}
+
+    def test_skips_blank_and_comments(self):
+        text = (
+            "# header line\n"
+            "\n"
+            "  \n"
+            "SET1\tdesc\tA\tB\n"
+        )
+        sets = read_gmt(io.BytesIO(text.encode()))
+        assert list(sets.keys()) == ["SET1"]
+
+    def test_skips_too_short_lines(self):
+        text = "GOOD\tdesc\tA\tB\nBAD_NO_GENES\tdesc\nALSO\tdesc\tC\n"
+        sets = read_gmt(io.BytesIO(text.encode()))
+        assert set(sets.keys()) == {"GOOD", "ALSO"}
+
+    def test_utf8_bom_tolerated(self):
+        text = "SET1\tdesc\tA\tB\n"
+        sets = read_gmt(io.BytesIO(b"\xef\xbb\xbf" + text.encode()))
+        assert sets == {"SET1": {"A", "B"}}
+
+    def test_duplicate_set_names_merge(self):
+        text = "SET1\tdesc\tA\tB\nSET1\tother_desc\tC\tD\n"
+        sets = read_gmt(io.BytesIO(text.encode()))
+        assert sets == {"SET1": {"A", "B", "C", "D"}}
+
+
+# ---- pathway_enrichment ---------------------------------------------------
+
+
+class TestPathwayEnrichment:
+    EXPECTED_COLS = [
+        "set_name", "n_fg", "n_fg_total", "n_bg", "n_bg_total",
+        "odds_ratio", "p_value", "q_value",
+    ]
+
+    def _build_inputs(self):
+        # Foreground: 6 trajectory genes, 5 of which belong to PATHWAY_X.
+        # Background: 50 other genes; 4 of them in PATHWAY_X. So PATHWAY_X
+        # is heavily enriched in the foreground.
+        foreground = pd.DataFrame({"gene_name": [
+            "Fos", "Jun", "Atf3", "Foxp1", "Foxp2", "Sox2",
+        ]})
+        background = pd.DataFrame({"gene_name": (
+            ["Fos", "Jun", "Atf3", "Foxp1", "Foxp2", "Sox2"]   # universe
+            + [f"G{i}" for i in range(50)]
+        )})
+        gene_sets = {
+            "PATHWAY_X": {"Fos", "Jun", "Atf3", "Foxp1", "Foxp2",
+                          "G1", "G2", "G3", "G4"},  # 5 fg + 4 bg
+            "PATHWAY_Y": {"G10", "G11", "G12", "G13"},          # 0 fg
+            "PATHWAY_TINY": {"Fos"},                            # below min size
+        }
+        return foreground, background, gene_sets
+
+    def test_columns_and_q_value_present(self):
+        pytest.importorskip("scipy")
+        fg, bg, gs = self._build_inputs()
+        out = pathway_enrichment(fg, bg, gs, min_set_size=3)
+        assert list(out.columns) == self.EXPECTED_COLS
+
+    def test_enriched_set_has_or_above_one(self):
+        pytest.importorskip("scipy")
+        fg, bg, gs = self._build_inputs()
+        out = pathway_enrichment(fg, bg, gs, min_set_size=3)
+        x = out[out["set_name"] == "PATHWAY_X"].iloc[0]
+        assert x["n_fg"] == 5
+        assert x["odds_ratio"] > 1.0
+        assert x["p_value"] < 0.05
+
+    def test_zero_overlap_set_dropped(self):
+        pytest.importorskip("scipy")
+        fg, bg, gs = self._build_inputs()
+        out = pathway_enrichment(fg, bg, gs, min_set_size=2)
+        # PATHWAY_Y has no foreground overlap; the function explicitly
+        # skips those (testing them just adds noise to the BH correction).
+        assert "PATHWAY_Y" not in set(out["set_name"])
+
+    def test_size_filter_applied_post_universe_restriction(self):
+        pytest.importorskip("scipy")
+        fg, bg, gs = self._build_inputs()
+        out = pathway_enrichment(fg, bg, gs, min_set_size=3)
+        # PATHWAY_TINY has only 1 universe-restricted member → dropped.
+        assert "PATHWAY_TINY" not in set(out["set_name"])
+
+    def test_empty_gene_sets_returns_empty_with_schema(self):
+        out = pathway_enrichment(
+            pd.DataFrame({"gene_name": ["A"]}),
+            pd.DataFrame({"gene_name": ["A", "B"]}),
+            gene_sets={},
+        )
+        assert list(out.columns) == self.EXPECTED_COLS
+        assert len(out) == 0
+
+    def test_missing_gene_name_column_returns_empty_with_schema(self):
+        out = pathway_enrichment(
+            pd.DataFrame({"x": [1]}),  # no gene_name
+            pd.DataFrame({"gene_name": ["A"]}),
+            gene_sets={"S": {"A"}},
+        )
+        assert list(out.columns) == self.EXPECTED_COLS
+
+    def test_background_excludes_foreground(self):
+        """Same convention as tf_enrichment: in-set genes shouldn't be
+        double-counted by appearing in both foreground and background."""
+        pytest.importorskip("scipy")
+        fg = pd.DataFrame({"gene_name": ["A", "B", "C"]})
+        # Bg includes A, B, C (these will be excluded), plus 100 others.
+        bg = pd.DataFrame({"gene_name": ["A", "B", "C"] + [f"G{i}" for i in range(100)]})
+        gs = {"S": {"A", "B", "C"}}
+        out = pathway_enrichment(fg, bg, gs, min_set_size=2)
+        row = out.iloc[0]
+        # All three foreground genes are in S; none of the *excluded*
+        # background genes should appear because A/B/C were removed.
+        assert row["n_fg"] == 3
+        assert row["n_bg"] == 0
+        assert row["n_bg_total"] == 100

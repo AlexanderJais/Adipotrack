@@ -388,35 +388,42 @@ def tf_lfc_panel(traj: pd.DataFrame, max_per_class: int = 12) -> plt.Figure:
     return fig
 
 
-def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
-    """Dot plot of TF-family enrichment. Dot size = n_fg, colour = -log10 q."""
+def _enrichment_dot(
+    enrichment: pd.DataFrame,
+    label_col: str,
+    title: str,
+    empty_msg: str,
+    top_n: int = 15,
+) -> plt.Figure:
+    """Shared dot-plot rendering for over-representation results.
+
+    Dot size = ``n_fg``, colour = ``−log₁₀(q_value)``. ``log₂(odds_ratio)``
+    is clamped to ±``log_cap``; off-scale rows are drawn as side-pointing
+    triangles at the cap and undefined-OR rows as hollow rings at x = 0.
+    The first scatter call is the in-range ("main") collection — the
+    audit regression test for ``tf_enrichment_dot`` keys on this
+    invariant, so don't reorder it.
+    """
     apply_style()
     if enrichment.empty:
         fig, ax = plt.subplots(figsize=(3, 2))
-        ax.text(0.5, 0.5, "No TF families pass the size filter",
-                ha="center", va="center")
+        ax.text(0.5, 0.5, empty_msg, ha="center", va="center")
         ax.axis("off")
         return fig
 
     d = enrichment.head(top_n).copy()
     d = d.iloc[::-1]  # so smallest q ends up at the top
 
-    # All masks built in numpy so the boolean ops never mix Series and
-    # ndarray. ±log_cap clamps values beyond the cap; rows with undefined
-    # OR (e.g. 0 in foreground or background) end up as NaN and are
-    # rendered as hollow rings at x = 0.
     or_arr = d["odds_ratio"].to_numpy(dtype=float)
     or_pos = np.where(or_arr > 0, or_arr, np.nan)
     with np.errstate(divide="ignore", invalid="ignore"):
         log_or = np.log2(or_pos)
-    log_cap = 6.0  # ±6 in log2 space ≈ 64-fold enrichment; plenty of headroom
+    log_cap = 6.0  # ±6 in log2 space ≈ 64-fold enrichment
     log_or_capped = np.clip(log_or, -log_cap, log_cap)
 
     off_high = (or_arr == np.inf) | (log_or > log_cap)
     off_low = log_or < -log_cap
     nan_mask = ~np.isfinite(log_or) & ~off_high & ~off_low
-    # Off-scale points are drawn as triangles below; exclude them from the
-    # main scatter so they don't get a clipped dot at ±log_cap on top.
     main_mask = ~(nan_mask | off_high | off_low)
 
     n_fg = d["n_fg"].to_numpy()
@@ -449,16 +456,15 @@ def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
     ax.set_xlim(-log_cap * 1.05, log_cap * 1.05)
     ax.axvline(0, color="black", lw=0.3, ls="--")
     ax.set_yticks(np.arange(len(d)))
-    ax.set_yticklabels(d["tf_family"], fontsize=6)
+    ax.set_yticklabels(d[label_col], fontsize=6)
     ax.set_xlabel("log₂ odds ratio (foreground vs background)")
-    ax.set_title(f"TF-family enrichment (top {len(d)})")
+    ax.set_title(title)
 
     cbar = fig.colorbar(sc, ax=ax, fraction=0.04, pad=0.04)
     cbar.set_label("−log₁₀ q", fontsize=6)
     cbar.ax.tick_params(labelsize=5)
     cbar.outline.set_linewidth(0.4)
 
-    # Size legend
     handles = []
     for k in (1, 5, 10):
         handles.append(plt.scatter([], [], s=k * 12 + 10,
@@ -470,6 +476,46 @@ def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
               borderpad=0.4, handletextpad=0.4)
     fig.tight_layout()
     return fig
+
+
+def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
+    """Dot plot of TF-family enrichment. Dot size = n_fg, colour = -log10 q."""
+    n = min(top_n, len(enrichment))
+    return _enrichment_dot(
+        enrichment, label_col="tf_family",
+        title=f"TF-family enrichment (top {n})",
+        empty_msg="No TF families pass the size filter",
+        top_n=top_n,
+    )
+
+
+def pathway_enrichment_dot(
+    enrichment: pd.DataFrame,
+    top_n: int = 15,
+    label_max_chars: int = 60,
+) -> plt.Figure:
+    """Dot plot of pathway / gene-set enrichment. Long set names are
+    truncated to ``label_max_chars`` so the y-axis stays readable.
+    """
+    if enrichment.empty:
+        return _enrichment_dot(
+            enrichment, label_col="set_name",
+            title=f"Pathway enrichment (top {top_n})",
+            empty_msg="No gene sets pass the size filter",
+            top_n=top_n,
+        )
+    d = enrichment.copy()
+    d["set_name"] = d["set_name"].astype(str).map(
+        lambda s: s if len(s) <= label_max_chars
+        else s[: label_max_chars - 1] + "…"
+    )
+    n = min(top_n, len(d))
+    return _enrichment_dot(
+        d, label_col="set_name",
+        title=f"Pathway enrichment (top {n})",
+        empty_msg="No gene sets pass the size filter",
+        top_n=top_n,
+    )
 
 
 # ---- Replicate QC ----------------------------------------------------------

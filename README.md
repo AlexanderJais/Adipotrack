@@ -160,6 +160,32 @@ are drawn as `>` / `<` triangles at the cap; rows with undefined OR
 (family entirely absent from the foreground or background) appear as
 hollow rings at x = 0.
 
+### Pathway / gene-set enrichment
+
+The Pathways tab does the same one-sided Fisher + BH treatment but
+with arbitrary gene sets you upload as a GMT file in the sidebar. The
+universe is foreground ∪ background; gene-set members outside the
+universe are dropped before testing (standard ORA convention).
+Background = trajectory minus foreground, same as the TF tab.
+
+GMT files are tab-separated:
+
+```
+SET_NAME<TAB>description<TAB>gene1<TAB>gene2<TAB>…
+```
+
+[MSigDB](https://www.gsea-msigdb.org/) ships hallmarks, GO BP, KEGG,
+Reactome, TF target, and many other collections in this format. Use
+the mouse-symbol version for mouse DEG tables. Lines starting with
+`#` are skipped, descriptions are dropped, and duplicate set names
+are merged.
+
+Tunable in the tab: minimum set size (drops noisy small sets),
+maximum set size (drops near-universe sets like "protein_coding"),
+and how many top rows to plot. Sets with zero foreground overlap are
+skipped automatically — they have OR = 0, no signal worth correcting
+against.
+
 ### Replicate QC
 
 For each uploaded file the QC tab runs:
@@ -183,6 +209,7 @@ For each uploaded file the QC tab runs:
 | Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot with one line per gene; the most extreme genes per class are labelled in a right-edge gutter (repelled with `adjustText`). |
 | Heatmap       | Signed-LFC heatmap of consensus genes across the 4 contrasts, with class swatch on the right and a horizontal colourbar at the bottom. A `Hierarchical clustering` checkbox reorders rows by similarity (average linkage on euclidean distance over the 4-column LFC vector) and adds a row dendrogram on the left; class membership then appears as a per-row colour band plus a separate legend. |
 | TFs           | Per-class TF bars (gene · tf_family) plus the TF-family enrichment dot plot and table. |
+| Pathways      | Optional. Upload a `.gmt` gene-set file in the sidebar (MSigDB / GO / KEGG / Reactome) and the tab runs over-representation of each set in the trajectory foreground vs the union-minus-foreground background. Tunable min/max set size; results as a dot plot + sortable table with PDF + CSV downloads. |
 | QC            | Four sub-tabs (one per uploaded file) with PCA and pairwise correlation. |
 | Tables        | Browsable consensus and trajectory tables; bundled XLSX download with consensus_2h, consensus_4h, trajectories, and (when populated) tf_enrichment sheets. |
 
@@ -274,6 +301,8 @@ off-scale points.
 - `padj_thresh` and `lfc_thresh` in the sidebar.
 - `min_family_size=3` in `tf_enrichment` (`analysis.py`) — minimum
   number of foreground TFs before a family is tested.
+- `min_set_size` / `max_set_size` controls in the Pathways tab (5 / 500
+  by default) — gate which gene sets are tested.
 - `n_top_var=2000` in `compute_pca` — how many high-variance genes
   feed into PCA. Note that `var_explained` is reported relative to the
   variance among these top-N genes, not the full transcriptome.

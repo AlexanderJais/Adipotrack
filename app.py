@@ -32,6 +32,8 @@ from analysis import (
     load_deg,
     load_samples,
     lookup_gene,
+    pathway_enrichment,
+    read_gmt,
     sample_correlation,
     sig_set,
     tf_enrichment,
@@ -42,6 +44,7 @@ from plots import (
     fig_to_bytes,
     heatmap,
     lfc_scatter,
+    pathway_enrichment_dot,
     pca_scatter,
     sample_corr_heatmap,
     tf_enrichment_dot,
@@ -70,6 +73,12 @@ with st.sidebar:
     f_2h_v = st.file_uploader("2 h — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt"])
     f_4h_g = st.file_uploader("4 h — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt"])
     f_4h_v = st.file_uploader("4 h — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt"])
+    st.header("Pathways (optional)")
+    f_gmt = st.file_uploader(
+        "Gene-set file (.gmt)", type=["gmt", "txt"],
+        help="Standard MSigDB / GO / KEGG GMT format. Used by the "
+             "Pathways tab; leave empty if you don't need it.",
+    )
 
 if not all([f_2h_g, f_2h_v, f_4h_g, f_4h_v]):
     st.info("Upload all four DEG files in the sidebar to start.")
@@ -104,6 +113,13 @@ def _qc_for_file(file_bytes: bytes, _cache_key: str,
     scores, var_exp = compute_pca(sd.expr)
     corr = sample_correlation(sd.expr)
     return sd.metadata, scores, var_exp, corr
+
+
+@st.cache_data(show_spinner=False)
+def _read_gmt_cached(file_bytes: bytes, _cache_key: str) -> dict[str, set[str]]:
+    """Parse a GMT upload once; cache by (bytes, filename)."""
+    from io import BytesIO
+    return read_gmt(BytesIO(file_bytes))
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
@@ -181,10 +197,10 @@ c4.metric("Reversed direction", int((traj["class"] == "reversed").sum()))
 
 (
     tab_overview, tab_lookup, tab_volcano, tab_overlap, tab_traj,
-    tab_heatmap, tab_tfs, tab_qc, tab_table,
+    tab_heatmap, tab_tfs, tab_pathways, tab_qc, tab_table,
 ) = st.tabs([
     "Overview", "Gene lookup", "Volcanoes", "Overlap", "Trajectories",
-    "Heatmap", "TFs", "QC", "Tables",
+    "Heatmap", "TFs", "Pathways", "QC", "Tables",
 ])
 
 with tab_overview:
@@ -401,6 +417,80 @@ with tab_tfs:
                                mime="application/pdf")
             c2.dataframe(tf_enrichment_df.round(4),
                          use_container_width=True, height=240)
+
+with tab_pathways:
+    if f_gmt is None:
+        st.info(
+            "Upload a gene-set file (.gmt) in the sidebar to run pathway "
+            "enrichment. Standard sources: MSigDB "
+            "(`https://www.gsea-msigdb.org/`) for hallmarks / GO BP / "
+            "KEGG / Reactome / TF-target sets. Use the mouse-symbol "
+            "version if your DEG tables are mouse."
+        )
+    elif traj.empty:
+        st.warning("No trajectory genes — pathway enrichment needs a "
+                   "non-empty foreground.")
+    else:
+        try:
+            gene_sets = _read_gmt_cached(f_gmt.getvalue(), f_gmt.name)
+        except Exception as e:
+            st.error(f"Could not parse GMT file: {e}")
+            gene_sets = {}
+        if not gene_sets:
+            st.warning("No gene sets parsed from the uploaded file.")
+        else:
+            c1, c2, c3 = st.columns(3)
+            min_size = c1.number_input(
+                "Min set size", min_value=2, max_value=200, value=5, step=1,
+                help="Drop very small gene sets — they're statistically "
+                     "noisy and clutter the table.",
+            )
+            max_size = c2.number_input(
+                "Max set size", min_value=50, max_value=5000, value=500, step=50,
+                help="Drop very large gene sets (e.g. 'protein_coding') "
+                     "that essentially overlap the universe.",
+            )
+            top_n = c3.number_input(
+                "Top N to plot", min_value=5, max_value=50, value=15, step=1,
+            )
+            st.caption(
+                f"Loaded **{len(gene_sets):,}** gene sets from "
+                f"`{f_gmt.name}`. Foreground = trajectory set "
+                f"({len(traj)} genes); background = union of tested genes "
+                f"minus the foreground ({len(bg_union) - len(traj):,} "
+                f"genes). One-sided Fisher exact, BH-adjusted."
+            )
+            with st.spinner("Running over-representation tests…"):
+                pathway_df = pathway_enrichment(
+                    traj, bg_union, gene_sets,
+                    min_set_size=int(min_size),
+                    max_set_size=int(max_size),
+                )
+            if pathway_df.empty:
+                st.info(
+                    "No gene sets pass the size filter and have any "
+                    "foreground overlap. Try lowering the min set size."
+                )
+            else:
+                f_path = pathway_enrichment_dot(pathway_df, top_n=int(top_n))
+                st.pyplot(f_path, use_container_width=True)
+                p1, p2 = st.columns(2)
+                p1.download_button(
+                    "Pathway enrichment PDF",
+                    fig_to_bytes(f_path, "pdf"),
+                    file_name="pathway_enrichment.pdf",
+                    mime="application/pdf",
+                )
+                p2.download_button(
+                    "Pathway enrichment CSV",
+                    pathway_df.to_csv(index=False).encode("utf-8"),
+                    file_name="pathway_enrichment.csv",
+                    mime="text/csv",
+                )
+                st.dataframe(
+                    pathway_df.round(4),
+                    use_container_width=True, height=320,
+                )
 
 with tab_qc:
     qc_files = [
