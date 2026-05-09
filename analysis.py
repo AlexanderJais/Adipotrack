@@ -458,6 +458,132 @@ def sample_correlation(expr: pd.DataFrame, method: str = "pearson") -> pd.DataFr
     return df.corr(method=method)
 
 
+# ---- Gene lookup -----------------------------------------------------------
+
+
+_LOOKUP_ANNOT_PREFERENCE = [
+    "gene_id", "gene_biotype", "gene_description", "tf_family",
+    "gene_chr", "gene_start", "gene_end", "gene_strand", "gene_length",
+]
+
+
+@dataclass
+class GeneLookup:
+    """Result of a single gene-symbol lookup across the four DEG tables.
+
+    ``name`` is the canonical casing as the symbol appears in the data, or
+    ``None`` if the query didn't match anything (in which case
+    ``suggestions`` carries up to ``n_suggestions`` close matches via
+    ``difflib.get_close_matches``).
+    """
+    query: str
+    name: str | None
+    annotations: dict[str, object]
+    per_contrast: pd.DataFrame  # comparison, log2FC, padj, significant
+    in_consensus_2h: bool
+    in_consensus_4h: bool
+    in_trajectory: bool
+    trajectory_class: str | None
+    delta_lfc: float | None
+    suggestions: list[str]
+
+
+def lookup_gene(
+    query: str,
+    contrasts: list[tuple[str, pd.DataFrame]],
+    cons_2h: pd.DataFrame,
+    cons_4h: pd.DataFrame,
+    traj: pd.DataFrame,
+    padj_thresh: float = 0.05,
+    lfc_thresh: float = 0.0,
+    n_suggestions: int = 5,
+) -> GeneLookup:
+    """Look up a gene symbol across the four DEG tables.
+
+    ``contrasts`` is a list of ``(label, df)`` pairs. ``cons_2h``,
+    ``cons_4h`` and ``traj`` are the outputs of
+    ``consensus_at_timepoint`` and ``trajectories``. The lookup is
+    case-insensitive on ``gene_name``; the canonical casing seen in
+    the data is preserved on the way out.
+    """
+    query = query.strip()
+
+    # Build {lower_name -> canonical_name} once. Iterate in contrast order
+    # so the leftmost contrast wins on casing if multiple files disagree.
+    name_map: dict[str, str] = {}
+    for _label, df in contrasts:
+        for name in df["gene_name"].astype(str):
+            name_map.setdefault(name.lower(), name)
+
+    canonical = name_map.get(query.lower())
+    if canonical is None:
+        from difflib import get_close_matches
+        suggestions = get_close_matches(
+            query, list(name_map.values()), n=n_suggestions, cutoff=0.6,
+        )
+        return GeneLookup(
+            query=query, name=None, annotations={},
+            per_contrast=pd.DataFrame(columns=["comparison", "log2FC", "padj", "significant"]),
+            in_consensus_2h=False, in_consensus_4h=False,
+            in_trajectory=False, trajectory_class=None, delta_lfc=None,
+            suggestions=suggestions,
+        )
+
+    # Per-contrast row. Genes filtered out of one upstream contrast still
+    # show up in others; pad missing rows with NaN so the table is square.
+    rows = []
+    for label, df in contrasts:
+        hit = df[df["gene_name"].astype(str) == canonical]
+        if hit.empty:
+            rows.append({
+                "comparison": label, "log2FC": float("nan"),
+                "padj": float("nan"), "significant": False,
+            })
+            continue
+        r = hit.iloc[0]
+        is_sig = bool(
+            (r["padj"] < padj_thresh)
+            and (abs(r["log2FoldChange"]) >= lfc_thresh)
+        )
+        rows.append({
+            "comparison": label,
+            "log2FC": float(r["log2FoldChange"]),
+            "padj": float(r["padj"]),
+            "significant": is_sig,
+        })
+    per_contrast = pd.DataFrame(rows)
+
+    # Annotations: take the first non-null value seen across contrasts.
+    annotations: dict[str, object] = {}
+    for _label, df in contrasts:
+        hit = df[df["gene_name"].astype(str) == canonical]
+        if hit.empty:
+            continue
+        for col in _LOOKUP_ANNOT_PREFERENCE:
+            if col in hit.columns:
+                v = hit.iloc[0][col]
+                if pd.notna(v):
+                    annotations.setdefault(col, v)
+
+    in_2h = canonical in set(cons_2h.get("gene_name", pd.Series(dtype=str)).astype(str))
+    in_4h = canonical in set(cons_4h.get("gene_name", pd.Series(dtype=str)).astype(str))
+    in_traj = canonical in set(traj.get("gene_name", pd.Series(dtype=str)).astype(str))
+    traj_class: str | None = None
+    delta: float | None = None
+    if in_traj and not traj.empty:
+        row = traj[traj["gene_name"].astype(str) == canonical].iloc[0]
+        traj_class = str(row["class"])
+        if "delta_lfc" in row.index and pd.notna(row["delta_lfc"]):
+            delta = float(row["delta_lfc"])
+
+    return GeneLookup(
+        query=query, name=canonical, annotations=annotations,
+        per_contrast=per_contrast,
+        in_consensus_2h=in_2h, in_consensus_4h=in_4h, in_trajectory=in_traj,
+        trajectory_class=traj_class, delta_lfc=delta, suggestions=[],
+    )
+
+
 # ----------------------------------------------------------------------------
 
 

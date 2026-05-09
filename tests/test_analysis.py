@@ -24,6 +24,7 @@ from analysis import (
     is_tf,
     load_deg,
     load_samples,
+    lookup_gene,
     sample_correlation,
     sig_set,
     tf_enrichment,
@@ -416,3 +417,138 @@ def test_sig_set_filters_by_padj():
     })
     s = sig_set(df, padj_thresh=0.05)
     assert s == {"A", "C"}
+
+
+# ---- lookup_gene ----------------------------------------------------------
+
+
+class TestLookupGene:
+    def _build(
+        self, deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+        deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+    ):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            g2 = load_deg(io.BytesIO(deg_genetic_2h_bytes))
+            v2 = load_deg(io.BytesIO(deg_vehicle_2h_bytes))
+            g4 = load_deg(io.BytesIO(deg_genetic_4h_bytes))
+            v4 = load_deg(io.BytesIO(deg_vehicle_4h_bytes))
+        c2 = consensus_at_timepoint(TimepointInputs(genetic=g2, vehicle=v2))
+        c4 = consensus_at_timepoint(TimepointInputs(genetic=g4, vehicle=v4))
+        traj = trajectories(c2, c4)
+        contrasts = [
+            ("2 h: vs WT",  g2),
+            ("2 h: vs SAL", v2),
+            ("4 h: vs WT",  g4),
+            ("4 h: vs SAL", v4),
+        ]
+        return contrasts, c2, c4, traj
+
+    def test_case_insensitive_canonical_casing_returned(
+        self, deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+        deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+    ):
+        contrasts, c2, c4, traj = self._build(
+            deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+            deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+        )
+        for q in ("Fos", "fos", "FOS", "  Fos  "):
+            r = lookup_gene(q, contrasts, c2, c4, traj)
+            assert r.name == "Fos", f"query {q!r} should resolve to canonical 'Fos'"
+
+    def test_per_contrast_values_match_input(
+        self, deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+        deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+    ):
+        contrasts, c2, c4, traj = self._build(
+            deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+            deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+        )
+        r = lookup_gene("Fos", contrasts, c2, c4, traj,
+                        padj_thresh=0.05, lfc_thresh=0.0)
+        rows = r.per_contrast.set_index("comparison")
+        # Fixture LFCs: genetic 2h +2.5, vehicle 2h +2.2, genetic 4h +3.0,
+        # vehicle 4h +2.6.
+        assert rows.loc["2 h: vs WT",  "log2FC"] == pytest.approx(2.5)
+        assert rows.loc["2 h: vs SAL", "log2FC"] == pytest.approx(2.2)
+        assert rows.loc["4 h: vs WT",  "log2FC"] == pytest.approx(3.0)
+        assert rows.loc["4 h: vs SAL", "log2FC"] == pytest.approx(2.6)
+        assert rows["significant"].all()
+
+    def test_membership_flags(
+        self, deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+        deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+    ):
+        contrasts, c2, c4, traj = self._build(
+            deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+            deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+        )
+        # Fos is sustained-up in the trajectory set.
+        r = lookup_gene("Fos", contrasts, c2, c4, traj)
+        assert r.in_consensus_2h
+        assert r.in_consensus_4h
+        assert r.in_trajectory
+        assert r.trajectory_class == "sustained_up"
+        assert r.delta_lfc == pytest.approx(2.6 - 2.2)
+        # Mxd1 is significant at 2 h but signs disagree -> excluded by
+        # the concordance gate, no membership.
+        r = lookup_gene("Mxd1", contrasts, c2, c4, traj)
+        assert not r.in_consensus_2h
+        assert not r.in_trajectory
+        assert r.trajectory_class is None
+
+    def test_significance_threshold_respected(
+        self, deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+        deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+    ):
+        contrasts, c2, c4, traj = self._build(
+            deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+            deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+        )
+        # Atf3 has |LFC| ~1; with lfc_thresh=2.0 it should drop the
+        # 'significant' flag in all four contrasts.
+        r = lookup_gene("Atf3", contrasts, c2, c4, traj, lfc_thresh=2.0)
+        assert not r.per_contrast["significant"].any()
+
+    def test_gene_in_only_some_contrasts_pads_with_nan(self):
+        # Avoids a UI regression where a missing row would crash the
+        # per-contrast table; the lookup should still return a row with
+        # NaN for the missing file.
+        df_full = pd.DataFrame({
+            "gene_id": ["G1", "G2"], "gene_name": ["A", "B"],
+            "log2FoldChange": [1.0, -1.0],
+            "pvalue": [1e-3, 1e-3], "padj": [0.01, 0.01],
+        })
+        df_partial = df_full.iloc[:1].copy()  # only "A"
+        contrasts = [("c1", df_full), ("c2", df_partial)]
+        empty = pd.DataFrame(columns=["gene_name"])
+        r = lookup_gene("B", contrasts, empty, empty, empty)
+        assert r.name == "B"
+        rows = r.per_contrast.set_index("comparison")
+        assert rows.loc["c1", "log2FC"] == pytest.approx(-1.0)
+        assert pd.isna(rows.loc["c2", "log2FC"])
+        assert rows.loc["c2", "significant"] == False  # noqa: E712
+
+    def test_not_found_returns_suggestions(
+        self, deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+        deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+    ):
+        contrasts, c2, c4, traj = self._build(
+            deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+            deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+        )
+        r = lookup_gene("Fos1", contrasts, c2, c4, traj)
+        assert r.name is None
+        assert "Fos" in r.suggestions
+
+    def test_annotations_carried(
+        self, deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+        deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+    ):
+        contrasts, c2, c4, traj = self._build(
+            deg_genetic_2h_bytes, deg_vehicle_2h_bytes,
+            deg_genetic_4h_bytes, deg_vehicle_4h_bytes,
+        )
+        r = lookup_gene("Fos", contrasts, c2, c4, traj)
+        assert r.annotations.get("tf_family") == "bZIP"
+        assert r.annotations.get("gene_id") == "ENSMUSG01"

@@ -31,6 +31,7 @@ from analysis import (
     is_tf,
     load_deg,
     load_samples,
+    lookup_gene,
     sample_correlation,
     sig_set,
     tf_enrichment,
@@ -179,10 +180,10 @@ c3.metric("Trajectory genes (2h ∩ 4h)", len(traj))
 c4.metric("Reversed direction", int((traj["class"] == "reversed").sum()))
 
 (
-    tab_overview, tab_volcano, tab_overlap, tab_traj,
+    tab_overview, tab_lookup, tab_volcano, tab_overlap, tab_traj,
     tab_heatmap, tab_tfs, tab_qc, tab_table,
 ) = st.tabs([
-    "Overview", "Volcanoes", "Overlap", "Trajectories",
+    "Overview", "Gene lookup", "Volcanoes", "Overlap", "Trajectories",
     "Heatmap", "TFs", "QC", "Tables",
 ])
 
@@ -205,6 +206,89 @@ with tab_overview:
     c2.subheader("Trajectory class counts")
     c2.dataframe(class_counts_series.rename("genes").to_frame(),
                  use_container_width=False)
+
+with tab_lookup:
+    query = st.text_input(
+        "Gene symbol",
+        value="",
+        placeholder="e.g. Fos, Jun, Atf3",
+        help="Case-insensitive search across all four uploaded DEG tables. "
+             "Significance flags use the current sidebar thresholds.",
+    )
+    if not query.strip():
+        st.caption(
+            "Type a gene symbol to see its values across the four contrasts "
+            "and its membership in the consensus / trajectory sets."
+        )
+    else:
+        lookup_contrasts = [
+            ("2 h: vs WT",  deg_2h_g),
+            ("2 h: vs SAL", deg_2h_v),
+            ("4 h: vs WT",  deg_4h_g),
+            ("4 h: vs SAL", deg_4h_v),
+        ]
+        result = lookup_gene(
+            query, lookup_contrasts, cons_2h, cons_4h, traj,
+            padj_thresh=padj_thresh, lfc_thresh=lfc_thresh,
+        )
+        if result.name is None:
+            st.warning(f"`{result.query}` not found in any of the four DEG tables.")
+            if result.suggestions:
+                st.caption(
+                    "Did you mean: "
+                    + ", ".join(f"`{s}`" for s in result.suggestions)
+                    + "?"
+                )
+        else:
+            st.subheader(result.name)
+
+            # Compact metadata strip + full description below.
+            meta_bits = []
+            a = result.annotations
+            if "gene_id" in a:
+                meta_bits.append(f"`{a['gene_id']}`")
+            if "gene_biotype" in a:
+                meta_bits.append(str(a["gene_biotype"]))
+            tf = a.get("tf_family")
+            if tf and str(tf).strip() != "-":
+                meta_bits.append(f"TF family: **{tf}**")
+            if all(k in a for k in ("gene_chr", "gene_start", "gene_end", "gene_strand")):
+                meta_bits.append(
+                    f"chr{a['gene_chr']}:"
+                    f"{int(a['gene_start']):,}–{int(a['gene_end']):,} "
+                    f"({a['gene_strand']})"
+                )
+            if meta_bits:
+                st.caption(" · ".join(meta_bits))
+            if "gene_description" in a:
+                st.caption(str(a["gene_description"]))
+
+            c1, c2 = st.columns([2, 1])
+            c1.markdown("**Per-contrast values** (current thresholds applied)")
+            display = result.per_contrast.copy()
+            display["significant"] = display["significant"].map(
+                {True: "✓", False: "·"}
+            )
+            c1.dataframe(
+                display, use_container_width=True, hide_index=True,
+                column_config={
+                    "log2FC": st.column_config.NumberColumn(format="%+.3f"),
+                    "padj": st.column_config.NumberColumn(format="%.2e"),
+                },
+            )
+
+            c2.markdown("**Set membership**")
+            c2.markdown(
+                f"- {'✓' if result.in_consensus_2h else '·'} Consensus @ 2 h\n"
+                f"- {'✓' if result.in_consensus_4h else '·'} Consensus @ 4 h\n"
+                f"- {'✓' if result.in_trajectory else '·'} Trajectory set"
+            )
+            if result.trajectory_class:
+                c2.markdown(
+                    f"**Class:** `{result.trajectory_class.replace('_', ' ')}`"
+                )
+            if result.delta_lfc is not None:
+                c2.markdown(f"**Δ lfc (4h − 2h):** {result.delta_lfc:+.3f}")
 
 with tab_volcano:
     panels = [

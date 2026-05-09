@@ -177,6 +177,7 @@ For each uploaded file the QC tab runs:
 | Tab           | What you'll see                                              |
 |---------------|--------------------------------------------------------------|
 | Overview      | Pipeline summary, per-comparison funnel (tested / sig / up / down at the current thresholds), and trajectory class counts. |
+| Gene lookup   | Type a gene symbol (case-insensitive) and see its log₂FC + padj across the four contrasts, the significance flag at the current sidebar thresholds, set membership (consensus 2 h, consensus 4 h, trajectory + class + Δlfc), and the carried annotations. Misses suggest close matches via `difflib`. |
 | Volcanoes     | One volcano per uploaded DEG file. Trajectory genes circled. Off-scale outliers shown as triangles at the boundary so they don't compress the panel. ↓/↑ counts in the corners. |
 | Overlap       | UpSet-style bar + dot plot of significant-gene overlaps across the four contrasts. The all-4 intersection is always pinned. |
 | Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot with one line per gene; the most extreme genes per class are labelled in a right-edge gutter (repelled with `adjustText`). |
