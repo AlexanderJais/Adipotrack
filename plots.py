@@ -618,8 +618,22 @@ def upset_plot(sets: dict[str, set[str]], max_rows: int = 20) -> plt.Figure:
     return fig
 
 
-def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
-    """Heatmap of LFC across the 4 comparisons for top consensus genes."""
+def heatmap(
+    traj: pd.DataFrame,
+    max_genes: int = 60,
+    cluster: bool = False,
+    linkage_method: str = "average",
+    distance_metric: str = "euclidean",
+) -> plt.Figure:
+    """Heatmap of LFC across the 4 comparisons for top consensus genes.
+
+    With ``cluster=True``, rows are reordered by hierarchical clustering
+    on the 4-column LFC vector (default: average linkage on euclidean
+    distance) and a small dendrogram is drawn on the left. Class
+    membership is then shown as a per-row colour band on the right with
+    a separate legend; the class boundary lines are dropped because rows
+    from different classes will interleave.
+    """
     apply_style()
     if traj.empty:
         fig, ax = plt.subplots(figsize=(3, 2))
@@ -628,16 +642,25 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
         return fig
 
     d = traj.copy()
-    d = d.sort_values(["class", "lfc_4h"], ascending=[True, False])
-    if len(d) > max_genes:
-        per_class = max(2, max_genes // max(1, d["class"].nunique()))
-        # Iterate groups explicitly — avoids the pandas 2.2 FutureWarning
-        # about implicit `include_groups` in DataFrameGroupBy.apply.
-        chunks = []
-        for _, g in d.groupby("class", observed=True, sort=False):
-            top_idx = g["lfc_4h"].abs().sort_values(ascending=False).index[:per_class]
-            chunks.append(g.loc[top_idx])
-        d = pd.concat(chunks) if chunks else d.iloc[0:0]
+    if cluster:
+        # Top by overall |lfc_4h|; per-class quotas don't apply once rows
+        # are about to be reordered by similarity.
+        if len(d) > max_genes:
+            top_idx = (
+                d["lfc_4h"].abs().sort_values(ascending=False).index[:max_genes]
+            )
+            d = d.loc[top_idx]
+    else:
+        d = d.sort_values(["class", "lfc_4h"], ascending=[True, False])
+        if len(d) > max_genes:
+            per_class = max(2, max_genes // max(1, d["class"].nunique()))
+            # Iterate groups explicitly — avoids the pandas 2.2 FutureWarning
+            # about implicit `include_groups` in DataFrameGroupBy.apply.
+            chunks = []
+            for _, g in d.groupby("class", observed=True, sort=False):
+                top_idx = g["lfc_4h"].abs().sort_values(ascending=False).index[:per_class]
+                chunks.append(g.loc[top_idx])
+            d = pd.concat(chunks) if chunks else d.iloc[0:0]
 
     mat = d[[
         "lfc_genetic_2h", "lfc_vehicle_2h",
@@ -653,19 +676,56 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
     else:
         vmax = 1.0
 
-    fig, ax = plt.subplots(figsize=(3.4, 0.13 * len(d) + 1.6))
-    im = ax.imshow(mat, aspect="auto", cmap="RdBu_r", vmin=-vmax, vmax=vmax,
-                   interpolation="nearest")
+    Z = None
+    if cluster and len(d) >= 2:
+        from scipy.cluster.hierarchy import leaves_list, linkage
+        Z = linkage(mat, method=linkage_method, metric=distance_metric)
+        # leaves_list returns leaves bottom-to-top in dendrogram coords;
+        # reverse so order[0] is the row that should land at the top of
+        # the heatmap (imshow uses origin='upper').
+        order = leaves_list(Z)[::-1]
+        mat = mat[order]
+        d = d.iloc[order].reset_index(drop=True)
 
-    # Class separator lines + right-side class label bar
+    if Z is not None:
+        from scipy.cluster.hierarchy import dendrogram
+        # constrained_layout cooperates with a custom GridSpec and the
+        # bottom colorbar; tight_layout warns and shifts panels in this
+        # configuration.
+        fig = plt.figure(
+            figsize=(4.2, 0.13 * len(d) + 1.6),
+            constrained_layout=True,
+        )
+        gs = fig.add_gridspec(1, 2, width_ratios=[0.18, 1.0], wspace=0.04)
+        ax_dendro = fig.add_subplot(gs[0, 0])
+        ax = fig.add_subplot(gs[0, 1])
+        dendrogram(
+            Z, orientation="left", ax=ax_dendro,
+            color_threshold=0,
+            above_threshold_color="#666666",
+            no_labels=True,
+        )
+        # Match imshow's inverted y-axis so leaves line up with rows.
+        ax_dendro.invert_yaxis()
+        ax_dendro.set_axis_off()
+    else:
+        fig, ax = plt.subplots(figsize=(3.4, 0.13 * len(d) + 1.6))
+
+    im = ax.imshow(mat, aspect="auto", cmap="RdBu_r",
+                   vmin=-vmax, vmax=vmax, interpolation="nearest")
+
     classes_in_order = list(d["class"].astype(str))
-    boundaries = [i for i in range(1, len(classes_in_order))
-                  if classes_in_order[i] != classes_in_order[i - 1]]
-    for b in boundaries:
-        ax.axhline(b - 0.5, color="white", lw=1.0)
-        ax.axhline(b - 0.5, color="black", lw=0.4)
 
-    # Vertical separator between 2h and 4h block
+    if not cluster:
+        boundaries = [i for i in range(1, len(classes_in_order))
+                      if classes_in_order[i] != classes_in_order[i - 1]]
+        for b in boundaries:
+            ax.axhline(b - 0.5, color="white", lw=1.0)
+            ax.axhline(b - 0.5, color="black", lw=0.4)
+    else:
+        boundaries = []
+
+    # Vertical separator between 2h and 4h block (kept in both modes).
     ax.axvline(1.5, color="white", lw=1.0)
     ax.axvline(1.5, color="black", lw=0.4)
 
@@ -675,24 +735,49 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
     ax.set_yticklabels(d["gene_name"], fontsize=5)
     ax.tick_params(left=False, bottom=False)
 
-    # Colour-coded class swatch on the right edge
-    starts = [0] + boundaries + [len(classes_in_order)]
-    for s, e in zip(starts[:-1], starts[1:]):
-        cls = classes_in_order[s]
-        ax.add_patch(plt.Rectangle(
-            (len(col_labels) - 0.4, s - 0.5),
-            0.18, e - s,
-            facecolor=CLASS_COLORS.get(cls, "#999999"),
-            edgecolor="none",
-            transform=ax.transData,
-            clip_on=False,
-        ))
-        ax.text(len(col_labels) - 0.1, (s + e) / 2 - 0.5,
-                cls.replace("_", " "), fontsize=5, va="center", ha="left",
-                clip_on=False)
+    if cluster:
+        # Per-row class swatch (no merged blocks because classes interleave)
+        # plus a small legend so the colour mapping is recoverable.
+        for i, cls in enumerate(classes_in_order):
+            ax.add_patch(plt.Rectangle(
+                (len(col_labels) - 0.4, i - 0.5),
+                0.18, 1.0,
+                facecolor=CLASS_COLORS.get(cls, "#999999"),
+                edgecolor="none",
+                transform=ax.transData,
+                clip_on=False,
+            ))
+        present = [c for c in CLASS_ORDER if c in set(classes_in_order)]
+        handles = [
+            plt.Rectangle((0, 0), 1, 1, facecolor=CLASS_COLORS[c], edgecolor="none")
+            for c in present
+        ]
+        ax.legend(
+            handles, [c.replace("_", " ") for c in present],
+            loc="upper left", bbox_to_anchor=(1.05, 1.0),
+            fontsize=5, frameon=False,
+            handlelength=1.0, handleheight=0.8,
+            labelspacing=0.4, borderpad=0.2,
+        )
+    else:
+        # Merged class blocks with text labels (rows are class-grouped).
+        starts = [0] + boundaries + [len(classes_in_order)]
+        for s, e in zip(starts[:-1], starts[1:]):
+            cls = classes_in_order[s]
+            ax.add_patch(plt.Rectangle(
+                (len(col_labels) - 0.4, s - 0.5),
+                0.18, e - s,
+                facecolor=CLASS_COLORS.get(cls, "#999999"),
+                edgecolor="none",
+                transform=ax.transData,
+                clip_on=False,
+            ))
+            ax.text(len(col_labels) - 0.1, (s + e) / 2 - 0.5,
+                    cls.replace("_", " "), fontsize=5, va="center", ha="left",
+                    clip_on=False)
 
     # Horizontal colourbar at the bottom so it doesn't collide with the
-    # right-side class swatch and labels.
+    # right-side swatch / legend.
     cbar = fig.colorbar(
         im, ax=ax,
         orientation="horizontal",
@@ -702,7 +787,9 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
     cbar.ax.tick_params(labelsize=5)
     cbar.outline.set_linewidth(0.4)
 
-    # Reserve space on the right for the class swatch + labels (~25% of axes
-    # width is plenty for short class names at fontsize 5).
-    fig.tight_layout(rect=(0, 0, 0.78, 1))
+    # Classic mode reserves space on the right for the class swatch +
+    # block labels via tight_layout; cluster mode is already laid out by
+    # constrained_layout above.
+    if Z is None:
+        fig.tight_layout(rect=(0, 0, 0.78, 1))
     return fig

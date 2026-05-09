@@ -268,14 +268,24 @@ with tab_heatmap:
         st.download_button("Heatmap PDF", fig_to_bytes(fig, "pdf"),
                            file_name="heatmap.pdf", mime="application/pdf")
     else:
+        c1, c2 = st.columns([3, 1])
         ceiling = min(300, len(traj))
         default = min(60, len(traj))
         floor = min(4, ceiling)
-        max_n = st.slider("Max genes shown", floor, ceiling, default)
-        fig = heatmap(traj, max_genes=max_n)
+        max_n = c1.slider("Max genes shown", floor, ceiling, default)
+        cluster = c2.checkbox(
+            "Hierarchical clustering",
+            help="Reorder rows by similarity across the four contrasts "
+                 "and draw a row dendrogram on the left. Class membership "
+                 "is shown as a per-row colour band on the right.",
+        )
+        fig = heatmap(traj, max_genes=max_n, cluster=cluster)
         st.pyplot(fig, use_container_width=False)
-        st.download_button("Heatmap PDF", fig_to_bytes(fig, "pdf"),
-                           file_name="heatmap.pdf", mime="application/pdf")
+        st.download_button(
+            "Heatmap PDF", fig_to_bytes(fig, "pdf"),
+            file_name=("heatmap_clustered.pdf" if cluster else "heatmap.pdf"),
+            mime="application/pdf",
+        )
 
 with tab_tfs:
     if traj.empty:

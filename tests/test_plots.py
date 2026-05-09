@@ -92,6 +92,51 @@ def test_heatmap_runs(traj):
     plt.close(fig)
 
 
+def test_heatmap_clustered_runs(traj):
+    pytest.importorskip("scipy.cluster.hierarchy")
+    fig = heatmap(traj, max_genes=10, cluster=True)
+    assert isinstance(fig, plt.Figure)
+    # Two main axes: dendrogram + heatmap. (Colorbar adds a third, that's
+    # fine — we just want >= 2 from the gridspec.)
+    assert len(fig.axes) >= 2
+    plt.close(fig)
+
+
+def test_heatmap_clustered_reorders_rows(traj):
+    """Clustering must change row order vs the class-sorted default for any
+    non-trivial input — otherwise the dendrogram is decorative only."""
+    pytest.importorskip("scipy.cluster.hierarchy")
+    # Pick out heatmap row labels (gene names) from the heatmap's y-tick
+    # text in both modes and confirm they differ.
+    fig_classic = heatmap(traj, max_genes=10, cluster=False)
+    classic_order = [t.get_text() for t in fig_classic.axes[0].get_yticklabels()]
+    plt.close(fig_classic)
+
+    fig_clustered = heatmap(traj, max_genes=10, cluster=True)
+    # The first axis in cluster mode is the dendrogram (axis-off); pick the
+    # heatmap axis by finding the one with y-tick labels.
+    heatmap_ax = next(
+        ax for ax in fig_clustered.axes
+        if any(t.get_text() for t in ax.get_yticklabels())
+    )
+    clustered_order = [t.get_text() for t in heatmap_ax.get_yticklabels()]
+    plt.close(fig_clustered)
+
+    assert classic_order != clustered_order
+    # The same set of genes should appear in both modes.
+    assert set(classic_order) == set(clustered_order)
+
+
+def test_heatmap_clustered_single_row_falls_back_gracefully(traj):
+    """A single row can't be clustered; the function should still return a
+    Figure rather than raising."""
+    pytest.importorskip("scipy.cluster.hierarchy")
+    one = traj.iloc[:1]
+    fig = heatmap(one, max_genes=5, cluster=True)
+    assert isinstance(fig, plt.Figure)
+    plt.close(fig)
+
+
 def test_tf_lfc_panel_runs(traj):
     fig = tf_lfc_panel(traj)
     assert isinstance(fig, plt.Figure)

@@ -180,7 +180,7 @@ For each uploaded file the QC tab runs:
 | Volcanoes     | One volcano per uploaded DEG file. Trajectory genes circled. Off-scale outliers shown as triangles at the boundary so they don't compress the panel. ↓/↑ counts in the corners. |
 | Overlap       | UpSet-style bar + dot plot of significant-gene overlaps across the four contrasts. The all-4 intersection is always pinned. |
 | Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot with one line per gene; the most extreme genes per class are labelled in a right-edge gutter (repelled with `adjustText`). |
-| Heatmap       | Signed-LFC heatmap of consensus genes across the 4 contrasts, with class swatch on the right and a horizontal colourbar at the bottom. |
+| Heatmap       | Signed-LFC heatmap of consensus genes across the 4 contrasts, with class swatch on the right and a horizontal colourbar at the bottom. A `Hierarchical clustering` checkbox reorders rows by similarity (average linkage on euclidean distance over the 4-column LFC vector) and adds a row dendrogram on the left; class membership then appears as a per-row colour band plus a separate legend. |
 | TFs           | Per-class TF bars (gene · tf_family) plus the TF-family enrichment dot plot and table. |
 | QC            | Four sub-tabs (one per uploaded file) with PCA and pairwise correlation. |
 | Tables        | Browsable consensus and trajectory tables; bundled XLSX download with consensus_2h, consensus_4h, trajectories, and (when populated) tf_enrichment sheets. |
@@ -278,7 +278,10 @@ off-scale points.
   variance among these top-N genes, not the full transcriptome.
 - `log_cap=6.0` in `tf_enrichment_dot` (`plots.py`) — clamps the
   `log₂(odds_ratio)` axis to ±6 (≈ 64-fold).
-- `max_genes` slider in the Heatmap tab.
+- `max_genes` slider and `Hierarchical clustering` toggle in the
+  Heatmap tab. `linkage_method` and `distance_metric` keyword args on
+  `heatmap()` (`"average"` and `"euclidean"` by default) let you swap in
+  Ward / complete linkage or correlation distance from a notebook.
 
 ## Conventions
 
