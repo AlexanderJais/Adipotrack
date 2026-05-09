@@ -252,6 +252,22 @@ stacking pass (trajectories). Install `adjustText` for nicer figures.
 DataFrame. Spearman ρ in the LFC scatter falls back to Pearson r.
 Install `scipy` for the proper statistics.
 
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite covers the loaders (including both sample-column naming
+schemes and the binary-Excel detection), consensus and trajectory
+classification, TF enrichment schema invariants, BH adjustment,
+PCA/correlation shapes, and a smoke pass over every figure function.
+Two tests are explicit regression guards for the bugs the audit
+caught: interleaved sample columns must group correctly via
+`_column_token`, and `tf_enrichment_dot` must not double-render
+off-scale points.
+
 ## Defaults you can change
 
 - `padj_thresh` and `lfc_thresh` in the sidebar.
