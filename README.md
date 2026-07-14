@@ -35,7 +35,8 @@ the app produces:
    present at 2 h but weakens by 4 h.
 4. **Figures** (volcanoes, UpSet-style overlap, LFC-2h-vs-4h scatter,
    per-class trajectory lines, signed-LFC heatmap, TF panel,
-   TF-family enrichment dot plot, replicate PCA, sample correlation).
+   TF-family enrichment dot plot, a core **circadian clock** antiphase
+   panel, replicate PCA, sample correlation).
 5. **Downloads**: every figure as PDF (vector, type-42 fonts, editable in
    Illustrator) and a single XLSX with the consensus, trajectory, and
    TF-enrichment tables.
@@ -162,6 +163,31 @@ are drawn as `>` / `<` triangles at the cap; rows with undefined OR
 (family entirely absent from the foreground or background) appear as
 hollow rings at x = 0.
 
+### Circadian clock module
+
+A curated panel of core clock genes (`CLOCK_GENES` in `analysis.py`) is
+looked up by symbol (case-insensitive, with aliases — e.g. `Bmal1→Arntl`,
+`Dec1/2→Bhlhe40/41`, `Rev-erbβ→Nr1d2`, `Chrono→Ciart`) in whichever contrast
+you select. Each gene carries a **role** in the transcription–translation
+feedback loop (activators, Per/Cry, Rev-erb/ROR, Dec, PAR-bZip/D-box outputs,
+accessory) and a **phase family** (`positive`, `repressive`, `accessory`).
+
+- The **bar chart** (`clock_bars`) shows each gene's log₂FC at a chosen
+  timepoint, grouped by role, coloured by sign, with non-significant bars
+  faded. The antiphase state reads directly: the positive limb up while the
+  repressive limb / outputs go down (or vice versa).
+- The **trajectory** (`clock_trajectory`) draws each clock gene across
+  20 min → 2 h → 4 h coloured by phase family, so you can watch the limbs
+  pull apart over time.
+- The **antiphase separation** metric is `mean(log₂FC of positive-limb
+  genes) − mean(log₂FC of repressive-limb/output genes)` over the detected
+  genes at the selected snapshot; a large positive value is the classic
+  driven-antiphase signature.
+
+Genes absent from a file are reported as "not detected" and left out of the
+bar chart (kept as `NaN` in the table). The clock table downloads separately
+as `clock_genes.xlsx`.
+
 ### Replicate QC
 
 For each uploaded file the QC tab runs:
@@ -184,6 +210,7 @@ For each uploaded file the QC tab runs:
 | Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot. When 20 min reference values are present, each line starts at a leading 20 min point (20 m → 2 h → 4 h). The largest-|LFC| genes get an endpoint dot and a leader line to a vertically-spread label, so each label points unambiguously at its trajectory. |
 | Heatmap       | Signed-LFC heatmap of consensus genes, with a leading 20 min column block (20m vs WT / 20m vs SAL) followed by the 2 h and 4 h contrasts, a class swatch on the right, and a horizontal colourbar at the bottom. |
 | TFs           | Per-class TF bars (gene · tf_family) plus the TF-family enrichment dot plot and table. |
+| Circadian     | Core clock panel: a diverging bar chart of clock-gene log₂FC grouped by TTFL role (a snapshot at a chosen timepoint/contrast), a clock-gene trajectory across 20 min → 2 h → 4 h coloured by phase family, an antiphase-separation summary, and a downloadable clock-gene table. |
 | QC            | Six sub-tabs (one per uploaded file) with PCA and pairwise correlation. |
 | Tables        | Browsable consensus and trajectory tables; bundled XLSX download with consensus_20m, consensus_2h, consensus_4h, trajectories, and (when populated) tf_enrichment sheets. |
 

@@ -21,6 +21,8 @@ from analysis import (
     CLASS_ORDER,
     TimepointInputs,
     add_earlier_reference,
+    clock_gene_panel,
+    clock_gene_table,
     compute_pca,
     consensus_at_timepoint,
     is_tf,
@@ -33,6 +35,8 @@ from analysis import (
     trajectories,
 )
 from plots import (
+    clock_bars,
+    clock_trajectory,
     fig_to_bytes,
     heatmap,
     lfc_scatter,
@@ -196,10 +200,10 @@ c5.metric("Reversed direction", int((traj["class"] == "reversed").sum()))
 
 (
     tab_overview, tab_volcano, tab_overlap, tab_traj,
-    tab_heatmap, tab_tfs, tab_qc, tab_table,
+    tab_heatmap, tab_tfs, tab_clock, tab_qc, tab_table,
 ) = st.tabs([
     "Overview", "Volcanoes", "Overlap", "Trajectories",
-    "Heatmap", "TFs", "QC", "Tables",
+    "Heatmap", "TFs", "Circadian", "QC", "Tables",
 ])
 
 with tab_overview:
@@ -329,6 +333,89 @@ with tab_tfs:
                                mime="application/pdf")
             c2.dataframe(tf_enrichment_df.round(4),
                          use_container_width=True, height=240)
+
+with tab_clock:
+    st.markdown(
+        """
+        **Core circadian clock.** The molecular clock is a
+        transcription–translation feedback loop: the **positive limb**
+        (BMAL1/Arntl · CLOCK · NPAS2) activates E-box transcription of its own
+        **repressive limb and outputs** (Per, Cry, Rev-erb, Dec, Dbp/Tef/Hlf),
+        which cycle **antiphase** to *Bmal1*. When the loop is driven to one
+        extreme, the positive limb goes up while the repressive limb / outputs
+        collapse (or vice versa). Effect size = log₂FC of the selected contrast.
+        """
+    )
+
+    veh_by_tp = {"20 min": deg_20m_v, "2 h": deg_2h_v, "4 h": deg_4h_v}
+    gen_by_tp = {"20 min": deg_20m_g, "2 h": deg_2h_g, "4 h": deg_4h_g}
+
+    cc1, cc2 = st.columns(2)
+    contrast = cc1.radio(
+        "Contrast", ["Vehicle (vs CRE+SAL)", "Genetic (vs WT+CNO)"],
+        horizontal=False,
+        help="Vehicle-control is the canonical chemogenetic effect size.",
+    )
+    snap_tp = cc2.radio("Snapshot timepoint", ["20 min", "2 h", "4 h"],
+                        index=2, horizontal=True)
+
+    deg_by_tp = veh_by_tp if contrast.startswith("Vehicle") else gen_by_tp
+    contrast_short = "CRE+CNO vs CRE+SAL" if contrast.startswith("Vehicle") \
+        else "CRE+CNO vs WT+CNO"
+
+    clock_snap = clock_gene_table(deg_by_tp[snap_tp])
+    clock_panel = clock_gene_panel(deg_by_tp)
+
+    # Antiphase summary at the selected snapshot.
+    found = clock_snap[clock_snap["found"]]
+    pos = found.loc[found["family"] == "positive", "lfc"]
+    rep = found.loc[found["family"] == "repressive", "lfc"]
+    pos_mean = float(pos.mean()) if len(pos) else float("nan")
+    rep_mean = float(rep.mean()) if len(rep) else float("nan")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Positive limb mean log₂FC", f"{pos_mean:+.2f}",
+              help="Mean over detected activators (Bmal1, Npas2, Clock, ROR…).")
+    m2.metric("Repressive/output mean log₂FC", f"{rep_mean:+.2f}",
+              help="Mean over detected Per/Cry/Rev-erb/Dec/Dbp/Tef/Hlf.")
+    if pos_mean == pos_mean and rep_mean == rep_mean:  # both non-NaN
+        m3.metric("Antiphase separation", f"{pos_mean - rep_mean:+.2f}",
+                  help="Positive-limb mean minus repressive-limb mean. Large "
+                       "positive = classic antiphase (activators up, targets down).")
+    m4.metric("Clock genes detected", f"{int(found.shape[0])} / {len(clock_snap)}")
+
+    cL, cR = st.columns([1, 1])
+    f_bars = clock_bars(clock_snap, padj_thresh,
+                        title=f"Core clock @ {snap_tp}  ({contrast_short})")
+    cL.pyplot(f_bars, use_container_width=True)
+    cL.download_button(
+        "Clock bars PDF", fig_to_bytes(f_bars, "pdf"),
+        file_name=f"clock_bars_{snap_tp.replace(' ', '')}.pdf",
+        mime="application/pdf", key="clock_bars_pdf",
+    )
+
+    f_ctraj = clock_trajectory(
+        clock_panel, list(deg_by_tp.keys()),
+        title=f"Clock trajectories ({contrast_short})",
+    )
+    cR.pyplot(f_ctraj, use_container_width=True)
+    cR.download_button(
+        "Clock trajectory PDF", fig_to_bytes(f_ctraj, "pdf"),
+        file_name="clock_trajectory.pdf",
+        mime="application/pdf", key="clock_traj_pdf",
+    )
+
+    st.subheader(f"Clock gene table ({contrast_short})")
+    disp = clock_panel.drop(columns=["role"]).rename(
+        columns={"role_label": "role"})
+    st.dataframe(disp.round(3), use_container_width=True, height=360,
+                 hide_index=True)
+    st.download_button(
+        "Download clock table (.xlsx)",
+        to_excel_bytes({"clock_genes": clock_panel.drop(columns=["role"])}),
+        file_name="clock_genes.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="clock_xlsx",
+    )
 
 with tab_qc:
     qc_files = [

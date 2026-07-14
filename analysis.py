@@ -237,6 +237,118 @@ CLASS_COLORS = {
 }
 
 
+# ---- Core circadian clock module -------------------------------------------
+#
+# A curated panel of core clock genes, grouped by their role in the
+# transcription–translation feedback loop (TTFL) and by phase "family":
+#   - positive limb (activators of the E-box): Bmal1/Arntl, Npas2, Clock; plus
+#     the ROR activators of Bmal1 and the Bmal1-phased D-box repressor Nfil3.
+#   - repressive limb / E-box outputs (peak antiphase to Bmal1): Per, Cry,
+#     Rev-erb (Nr1d1/2), Dec (Bhlhe40/41), the PAR-bZip factors Dbp/Tef/Hlf,
+#     and Chrono (Ciart).
+#   - accessory post-translational regulators (not cleanly phased).
+# Antiphase readout: positive limb up while the repressive limb / outputs go
+# down (or vice versa).
+
+CLOCK_ROLES = [
+    ("activator", "Activators (positive limb)"),
+    ("per_cry",   "Repressors (Per / Cry)"),
+    ("nr",        "Rev-erb / ROR"),
+    ("dec",       "Dec repressors"),
+    ("output",    "PAR-bZip / D-box outputs"),
+    ("accessory", "Accessory / post-translational"),
+]
+
+# (role, family, display label, [symbols to try in order]). Family is one of
+# "positive", "repressive", "accessory" and drives the antiphase colouring and
+# summary; role drives the functional grouping in the bar chart.
+CLOCK_GENES = [
+    ("activator", "positive",   "Bmal1 (Arntl)",   ["Arntl", "Bmal1"]),
+    ("activator", "positive",   "Bmal2 (Arntl2)",  ["Arntl2", "Bmal2"]),
+    ("activator", "positive",   "Clock",           ["Clock"]),
+    ("activator", "positive",   "Npas2",           ["Npas2"]),
+    ("per_cry",   "repressive", "Per1",            ["Per1"]),
+    ("per_cry",   "repressive", "Per2",            ["Per2"]),
+    ("per_cry",   "repressive", "Per3",            ["Per3"]),
+    ("per_cry",   "repressive", "Cry1",            ["Cry1"]),
+    ("per_cry",   "repressive", "Cry2",            ["Cry2"]),
+    ("nr",        "repressive", "Rev-erbα (Nr1d1)", ["Nr1d1"]),
+    ("nr",        "repressive", "Rev-erbβ (Nr1d2)", ["Nr1d2"]),
+    ("nr",        "positive",   "Rorα (Rora)",     ["Rora"]),
+    ("nr",        "positive",   "Rorβ (Rorb)",     ["Rorb"]),
+    ("nr",        "positive",   "Rorγ (Rorc)",     ["Rorc"]),
+    ("dec",       "repressive", "Dec1 (Bhlhe40)",  ["Bhlhe40", "Dec1", "Stra13"]),
+    ("dec",       "repressive", "Dec2 (Bhlhe41)",  ["Bhlhe41", "Dec2", "Sharp1"]),
+    ("output",    "repressive", "Dbp",             ["Dbp"]),
+    ("output",    "repressive", "Tef",             ["Tef"]),
+    ("output",    "repressive", "Hlf",             ["Hlf"]),
+    ("output",    "positive",   "Nfil3 (E4bp4)",   ["Nfil3", "E4bp4"]),
+    ("accessory", "repressive", "Chrono (Ciart)",  ["Ciart", "Gm129"]),
+    ("accessory", "accessory",  "Timeless",        ["Timeless", "Tim"]),
+    ("accessory", "accessory",  "Csnk1d",          ["Csnk1d"]),
+    ("accessory", "accessory",  "Csnk1e",          ["Csnk1e"]),
+    ("accessory", "accessory",  "Fbxl3",           ["Fbxl3"]),
+]
+
+CLOCK_FAMILY_COLORS = {
+    "positive":   "#D55E00",  # vermillion — positive limb
+    "repressive": "#0072B2",  # blue — repressive limb / outputs
+    "accessory":  "#999999",  # grey
+}
+
+_CLOCK_ROLE_ORDER = [r for r, _ in CLOCK_ROLES]
+
+
+def clock_gene_table(deg: pd.DataFrame) -> pd.DataFrame:
+    """Look up the curated clock panel in one DEG table (one timepoint).
+
+    Matching is case-insensitive and tries each symbol/alias in order. Returns
+    one row per curated gene (in ``CLOCK_GENES`` order) with columns: role,
+    role_label, family, label, gene (matched symbol), lfc, padj, found.
+    Missing genes get NaN LFC/padj and found=False.
+    """
+    lut: dict[str, tuple[str, float, float]] = {}
+    for name, lfc, padj in zip(deg["gene_name"].astype(str),
+                               deg["log2FoldChange"], deg["padj"]):
+        lut.setdefault(name.lower(), (name, float(lfc), float(padj)))
+
+    role_labels = dict(CLOCK_ROLES)
+    rows = []
+    for role, family, label, symbols in CLOCK_GENES:
+        hit = next((lut[s.lower()] for s in symbols if s.lower() in lut), None)
+        rows.append({
+            "role": role,
+            "role_label": role_labels[role],
+            "family": family,
+            "label": label,
+            "gene": hit[0] if hit else symbols[0],
+            "lfc": hit[1] if hit else np.nan,
+            "padj": hit[2] if hit else np.nan,
+            "found": hit is not None,
+        })
+    out = pd.DataFrame(rows)
+    out["role"] = pd.Categorical(out["role"], _CLOCK_ROLE_ORDER, ordered=True)
+    return out
+
+
+def clock_gene_panel(deg_by_tp: "dict[str, pd.DataFrame]") -> pd.DataFrame:
+    """Assemble a multi-timepoint clock table.
+
+    ``deg_by_tp`` maps a timepoint label to its DEG table (all the same
+    contrast — e.g. all vehicle-control). Because ``clock_gene_table`` returns
+    genes in a fixed order, the per-timepoint columns are assembled
+    positionally. Returns role, role_label, family, label plus ``lfc_<tp>`` and
+    ``padj_<tp>`` for each timepoint key (in the order given).
+    """
+    tables = {tp: clock_gene_table(deg) for tp, deg in deg_by_tp.items()}
+    first = next(iter(tables.values()))
+    out = first[["role", "role_label", "family", "label"]].copy()
+    for tp, t in tables.items():
+        out[f"lfc_{tp}"] = t["lfc"].to_numpy()
+        out[f"padj_{tp}"] = t["padj"].to_numpy()
+    return out
+
+
 def is_tf(df: pd.DataFrame) -> pd.Series:
     """Boolean mask: gene has an annotated TF family (tf_family != '-')."""
     if "tf_family" not in df.columns:

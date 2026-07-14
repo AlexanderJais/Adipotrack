@@ -13,7 +13,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from analysis import CLASS_COLORS, CLASS_ORDER
+from analysis import (
+    CLASS_COLORS,
+    CLASS_ORDER,
+    CLOCK_FAMILY_COLORS,
+    CLOCK_ROLES,
+)
 
 
 def apply_style() -> None:
@@ -728,4 +733,177 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
     # Reserve space on the right for the class swatch + labels (~25% of axes
     # width is plenty for short class names at fontsize 5).
     fig.tight_layout(rect=(0, 0, 0.78, 1))
+    return fig
+
+
+# ---- Circadian clock module ------------------------------------------------
+
+def clock_bars(
+    clock: pd.DataFrame,
+    padj_thresh: float = 0.05,
+    title: str = "Core clock genes",
+) -> plt.Figure:
+    """Diverging horizontal bars of clock-gene LFC, grouped by TTFL role.
+
+    ``clock`` is a single-timepoint table from ``clock_gene_table`` (columns
+    role, role_label, family, label, lfc, padj, found). Bars are coloured by
+    LFC sign; genes that are not significant at ``padj_thresh`` are faded.
+    Grouping by role makes the antiphase pattern (activators up while
+    repressors/outputs go down) read at a glance.
+    """
+    apply_style()
+    sub = clock[clock["found"]].copy()
+    if sub.empty:
+        fig, ax = plt.subplots(figsize=(3.4, 2))
+        ax.text(0.5, 0.5, "No clock genes found in this file",
+                ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    # Role order (activator → accessory), and within a role by descending LFC.
+    sub = sub.sort_values(["role", "lfc"], ascending=[True, False])
+    n = len(sub)
+    y = np.arange(n)[::-1]  # first row at the top
+    lfc = sub["lfc"].to_numpy(dtype=float)
+    padj = sub["padj"].to_numpy(dtype=float)
+    sig = np.isfinite(padj) & (padj < padj_thresh)
+
+    x_lim = max(float(np.nanmax(np.abs(lfc))) * 1.18, 1.0)
+
+    fig, ax = plt.subplots(figsize=(4.2, 0.20 * n + 1.2))
+    for yi, val, is_sig in zip(y, lfc, sig):
+        color = "#D55E00" if val > 0 else "#0072B2"
+        ax.barh(yi, val, height=0.7, color=color,
+                alpha=1.0 if is_sig else 0.32,
+                edgecolor=color if is_sig else "none",
+                linewidth=0.0)
+
+    ax.axvline(0, color="black", lw=0.5)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(sub["label"], fontsize=5.5)
+    ax.set_ylim(-0.7, n - 0.3)
+    ax.set_xlim(-x_lim, x_lim)
+    ax.set_xlabel("log$_2$ fold change")
+    ax.tick_params(left=False)
+    ax.set_title(title)
+
+    # Role separators + a colour swatch/label per block in the right margin.
+    roles = sub["role"].astype(str).tolist()
+    role_labels = dict(CLOCK_ROLES)
+    # families are consistent enough within a role for the swatch colour; use
+    # the block's majority family so the swatch tracks the antiphase colouring.
+    boundaries = [i for i in range(1, n) if roles[i] != roles[i - 1]]
+    starts = [0] + boundaries + [n]
+    swatch_x = x_lim * 1.04
+    for s, e in zip(starts[:-1], starts[1:]):
+        if s > 0:
+            ax.axhline((y[s - 1] + y[s]) / 2, color="#dddddd", lw=0.6)
+        block = sub.iloc[s:e]
+        fam = block["family"].mode().iat[0]
+        y_top, y_bot = y[s], y[e - 1]
+        ax.add_patch(plt.Rectangle(
+            (swatch_x, y_bot - 0.35), x_lim * 0.03, (y_top - y_bot) + 0.7,
+            facecolor=CLOCK_FAMILY_COLORS.get(fam, "#999999"),
+            edgecolor="none", clip_on=False,
+        ))
+        ax.text(swatch_x + x_lim * 0.06, (y_top + y_bot) / 2,
+                role_labels.get(roles[s], roles[s]),
+                fontsize=5.5, va="center", ha="left", clip_on=False)
+
+    # Significance legend (colour already encodes up/down direction).
+    from matplotlib.patches import Patch
+    ax.legend(
+        handles=[
+            Patch(facecolor="#777777", edgecolor="none", label="padj < thresh"),
+            Patch(facecolor="#777777", edgecolor="none", alpha=0.32, label="n.s."),
+        ],
+        loc="lower left", fontsize=5, borderpad=0.4, handlelength=1.0,
+        handletextpad=0.4, labelspacing=0.3,
+    )
+    n_missing = int((~clock["found"]).sum())
+    if n_missing:
+        ax.text(0.02, 0.99, f"{n_missing} gene(s) not detected",
+                transform=ax.transAxes, fontsize=5, color="#666666",
+                ha="left", va="top")
+
+    # Reserve room on the right for the role swatch + labels.
+    fig.tight_layout(rect=(0, 0, 0.72, 1))
+    return fig
+
+
+def clock_trajectory(
+    panel: pd.DataFrame,
+    tp_labels: list[str],
+    title: str = "Clock gene trajectories",
+) -> plt.Figure:
+    """One line per clock gene across timepoints, coloured by phase family.
+
+    ``panel`` is a ``clock_gene_panel`` table with ``lfc_<tp>`` columns for
+    each label in ``tp_labels`` (in order). Positive-limb genes (warm) and
+    repressive-limb/output genes (cool) pulling apart over time is the
+    antiphase signature.
+    """
+    apply_style()
+    lfc_cols = [f"lfc_{tp}" for tp in tp_labels]
+    present = [c for c in lfc_cols if c in panel.columns]
+    if len(present) < 2 or panel.empty:
+        fig, ax = plt.subplots(figsize=(3.4, 2))
+        ax.text(0.5, 0.5, "Need ≥2 timepoints for a trajectory",
+                ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    x_pos = list(range(len(lfc_cols)))
+    last_x = x_pos[-1]
+    mat = panel[lfc_cols].to_numpy(dtype=float)
+    finite = mat[np.isfinite(mat)]
+    y_lim = max(float(np.abs(finite).max()) * 1.10, 1.0) if finite.size else 1.0
+
+    fig, ax = plt.subplots(figsize=(3.8, 4.4))
+    for _, r in panel.iterrows():
+        ys = [r[c] for c in lfc_cols]
+        if np.all([not np.isfinite(v) for v in ys]):
+            continue
+        ax.plot(x_pos, ys, color=CLOCK_FAMILY_COLORS.get(r["family"], "#999999"),
+                lw=0.9, alpha=0.75, zorder=2)
+
+    ax.axhline(0, color="black", lw=0.3, zorder=1)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(tp_labels)
+    ax.set_xlim(-0.15, last_x + 0.95)
+    ax.set_ylim(-y_lim, y_lim)
+    ax.set_ylabel("log$_2$ fold change")
+    ax.set_title(title)
+
+    # Right-edge labels at the final timepoint, spread to avoid overlap.
+    end_col = lfc_cols[-1]
+    labelled = panel[np.isfinite(panel[end_col].to_numpy(dtype=float))]
+    if not labelled.empty:
+        y_end = labelled[end_col].to_numpy(dtype=float)
+        label_y = _spread_labels(y_end, min_gap=y_lim * 0.06, lo=-y_lim, hi=y_lim)
+        label_x = last_x + 0.30
+        for ye, yl, name, fam in zip(
+            y_end, label_y, labelled["label"], labelled["family"]
+        ):
+            col = CLOCK_FAMILY_COLORS.get(fam, "#999999")
+            ax.plot([last_x], [ye], "o", ms=2.0, color=col,
+                    zorder=5, clip_on=False)
+            ax.plot([last_x, label_x - 0.03], [ye, yl], color="grey",
+                    lw=0.3, zorder=4, clip_on=False)
+            ax.text(label_x, yl, name, fontsize=5, va="center", ha="left",
+                    color=col, zorder=6)
+
+    # Family legend
+    handles = [
+        plt.Line2D([], [], color=CLOCK_FAMILY_COLORS["positive"], lw=1.2,
+                   label="positive limb"),
+        plt.Line2D([], [], color=CLOCK_FAMILY_COLORS["repressive"], lw=1.2,
+                   label="repressive / output"),
+        plt.Line2D([], [], color=CLOCK_FAMILY_COLORS["accessory"], lw=1.2,
+                   label="accessory"),
+    ]
+    ax.legend(handles=handles, loc="upper left", fontsize=5,
+              bbox_to_anchor=(0.0, 1.0))
+    fig.tight_layout(rect=(0, 0, 0.82, 1))
     return fig
