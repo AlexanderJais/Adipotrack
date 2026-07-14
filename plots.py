@@ -236,8 +236,20 @@ def trajectory_lines(
         ax.axis("off")
         return fig
 
+    # A leading 20 min reference point is drawn when add_earlier_reference has
+    # populated ``lfc_20m``. Genes not tested at 20 min carry NaN there, so
+    # their line simply starts at the 2 h point.
+    if "lfc_20m" in traj.columns:
+        x_cols = ["lfc_20m", "lfc_2h", "lfc_4h"]
+        x_labels = ["20 m", "2 h", "4 h"]
+    else:
+        x_cols = ["lfc_2h", "lfc_4h"]
+        x_labels = ["2 h", "4 h"]
+    x_pos = list(range(len(x_cols)))
+    last_x = x_pos[-1]
+
     # Shared symmetric y-range so panels can be compared at a glance.
-    arr = np.concatenate([traj["lfc_2h"].to_numpy(), traj["lfc_4h"].to_numpy()])
+    arr = np.concatenate([traj[c].to_numpy(dtype=float) for c in x_cols])
     if arr.size:
         y_lim = max(float(np.nanquantile(np.abs(arr), 0.99)) * 1.18, 1.0)
     else:
@@ -260,14 +272,14 @@ def trajectory_lines(
 
         # Per-gene trajectories
         for _, r in sub.iterrows():
-            ax.plot([0, 1], [r["lfc_2h"], r["lfc_4h"]],
+            ax.plot(x_pos, [r[c] for c in x_cols],
                     color=CLASS_COLORS[cls], lw=0.5, alpha=0.45,
                     zorder=2)
 
         ax.axhline(0, color="black", lw=0.3, zorder=1)
-        ax.set_xticks([0, 1])
-        ax.set_xticklabels(["2 h", "4 h"])
-        ax.set_xlim(-0.15, 1.65)  # extra room on the right for labels
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(x_labels)
+        ax.set_xlim(-0.15, last_x + 0.65)  # extra room on the right for labels
         ax.set_ylim(-y_lim, y_lim)
         ax.set_title(f"{cls.replace('_', ' ')}\n(n = {len(sub)})")
 
@@ -277,12 +289,12 @@ def trajectory_lines(
                 sub["lfc_4h"].abs().to_numpy().argsort()[::-1]
             ].head(label_top_n)
 
-            anchor_x = np.full(len(extreme), 1.0)
+            anchor_x = np.full(len(extreme), float(last_x))
             anchor_y = extreme["lfc_4h"].to_numpy(dtype=float)
 
             texts = [
                 ax.text(
-                    1.18, y, name,
+                    last_x + 0.18, y, name,
                     fontsize=5.5, va="center", ha="left", zorder=6,
                 )
                 for y, name in zip(anchor_y, extreme["gene_name"])
@@ -615,7 +627,9 @@ def upset_plot(sets: dict[str, set[str]], max_rows: int = 20) -> plt.Figure:
 
 
 def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
-    """Heatmap of LFC across the 4 comparisons for top consensus genes."""
+    """Heatmap of LFC across the per-timepoint comparisons for top consensus
+    genes. Includes a leading 20 min block when those reference columns are
+    present (see ``add_earlier_reference``)."""
     apply_style()
     if traj.empty:
         fig, ax = plt.subplots(figsize=(3, 2))
@@ -635,11 +649,20 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
             chunks.append(g.loc[top_idx])
         d = pd.concat(chunks) if chunks else d.iloc[0:0]
 
-    mat = d[[
-        "lfc_genetic_2h", "lfc_vehicle_2h",
-        "lfc_genetic_4h", "lfc_vehicle_4h",
-    ]].to_numpy()
-    col_labels = ["2h vs WT", "2h vs SAL", "4h vs WT", "4h vs SAL"]
+    # Timepoint blocks, earliest first. The 20 min reference block is included
+    # only when add_earlier_reference has populated its columns; genes not
+    # tested at 20 min leave NaN cells (drawn blank).
+    blocks = []
+    if {"lfc_genetic_20m", "lfc_vehicle_20m"} <= set(d.columns):
+        blocks.append(("lfc_genetic_20m", "lfc_vehicle_20m", "20m vs WT", "20m vs SAL"))
+    blocks.append(("lfc_genetic_2h", "lfc_vehicle_2h", "2h vs WT", "2h vs SAL"))
+    blocks.append(("lfc_genetic_4h", "lfc_vehicle_4h", "4h vs WT", "4h vs SAL"))
+    cols: list[str] = []
+    col_labels: list[str] = []
+    for gcol, vcol, glab, vlab in blocks:
+        cols += [gcol, vcol]
+        col_labels += [glab, vlab]
+    mat = d[cols].to_numpy()
 
     # Symmetric, robust colour scale (99th percentile) so a single huge LFC
     # doesn't desaturate everything else.
@@ -649,7 +672,7 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
     else:
         vmax = 1.0
 
-    fig, ax = plt.subplots(figsize=(3.4, 0.13 * len(d) + 1.6))
+    fig, ax = plt.subplots(figsize=(0.55 * len(cols) + 1.2, 0.13 * len(d) + 1.6))
     im = ax.imshow(mat, aspect="auto", cmap="RdBu_r", vmin=-vmax, vmax=vmax,
                    interpolation="nearest")
 
@@ -661,9 +684,10 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
         ax.axhline(b - 0.5, color="white", lw=1.0)
         ax.axhline(b - 0.5, color="black", lw=0.4)
 
-    # Vertical separator between 2h and 4h block
-    ax.axvline(1.5, color="white", lw=1.0)
-    ax.axvline(1.5, color="black", lw=0.4)
+    # Vertical separators between timepoint blocks (every 2 columns)
+    for b in range(2, len(cols), 2):
+        ax.axvline(b - 0.5, color="white", lw=1.0)
+        ax.axvline(b - 0.5, color="black", lw=0.4)
 
     ax.set_xticks(range(len(col_labels)))
     ax.set_xticklabels(col_labels, rotation=45, ha="right")

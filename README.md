@@ -1,16 +1,19 @@
 # Consensus DEG explorer
 
 Streamlit app and analysis library for finding genes that are robustly
-regulated by chemogenetic activation. The pipeline takes four DESeq2 DEG
-tables (two timepoints × two control comparisons), calls a strict
-consensus per timepoint, intersects across timepoints to get a trajectory
-set, and produces publication-style figures plus replicate-level QC and
-TF-family enrichment.
+regulated by chemogenetic activation. The pipeline takes six DESeq2 DEG
+tables (three timepoints × two control comparisons), calls a strict
+consensus per timepoint, intersects the 2 h and 4 h consensus sets to get a
+trajectory set, and produces publication-style figures plus replicate-level
+QC and TF-family enrichment. The 20 min timepoint is carried as an earlier
+reference point on the trajectory (it does not gate membership).
 
 ## What it does
 
-Given four DEG files from a chemogenetic experiment:
+Given six DEG files from a chemogenetic experiment:
 
+- `20 min: CRE+CNO vs WT+CNO`  (genetic control, 20 min timepoint)
+- `20 min: CRE+CNO vs CRE+SAL` (vehicle control, 20 min timepoint)
 - `2 h: CRE+CNO vs WT+CNO`   (genetic control, 2 h timepoint)
 - `2 h: CRE+CNO vs CRE+SAL`  (vehicle control, 2 h timepoint)
 - `4 h: CRE+CNO vs WT+CNO`   (genetic control, 4 h timepoint)
@@ -21,6 +24,9 @@ the app produces:
 1. **Strict consensus** per timepoint: genes significant in *both* control
    comparisons with concordant `log2FoldChange` sign.
 2. **Trajectory set**: genes that are strict-consensus at *both* 2 h and 4 h.
+   The 20 min fold changes are attached to these genes as an earlier
+   reference point (leading point in the trajectory line plot, extra column
+   block in the heatmap, extra columns in the exported tables).
 3. Trajectory **classes** per gene: `sustained_up`, `transient_up`,
    `sustained_down`, `transient_down`, `reversed` (based on direction
    and magnitude change between 2 h and 4 h, using the vehicle-control
@@ -48,8 +54,8 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app opens at `http://localhost:8501`. Upload the four DEG files via
-the sidebar — once all four are present, the analysis runs.
+The app opens at `http://localhost:8501`. Upload the six DEG files via
+the sidebar — once all six are present, the analysis runs.
 
 ## Input file format
 
@@ -116,6 +122,16 @@ sets. The canonical effect size used for plots is
 `log2FoldChange(CRE+CNO vs CRE+SAL)`, which is the most direct readout of
 the chemogenetic activation.
 
+The 20 min timepoint does **not** change trajectory membership. Its fold
+changes are attached to the trajectory table by `add_earlier_reference`
+(`analysis.py`) as reference-only columns (`lfc_20m`, `lfc_genetic_20m`,
+`lfc_vehicle_20m`), pulled from the raw 20 min DEG tables so every tested
+gene is covered. Trajectory genes not tested at 20 min carry `NaN` there —
+their trajectory line simply starts at the 2 h point and their 20 min
+heatmap cells are drawn blank. The 20 min timepoint still gets its own
+strict consensus (shown in the Overview, Tables, volcano, and overlap
+views) exactly like 2 h and 4 h.
+
 ### Trajectory classes
 
 For each gene `g` in the trajectory set, with `lfc_2h` and `lfc_4h` from
@@ -163,22 +179,23 @@ For each uploaded file the QC tab runs:
 | Tab           | What you'll see                                              |
 |---------------|--------------------------------------------------------------|
 | Overview      | Pipeline summary, per-comparison funnel (tested / sig / up / down at the current thresholds), and trajectory class counts. |
-| Volcanoes     | One volcano per uploaded DEG file. Trajectory genes circled. Off-scale outliers shown as triangles at the boundary so they don't compress the panel. ↓/↑ counts in the corners. |
-| Overlap       | UpSet-style bar + dot plot of significant-gene overlaps across the four contrasts. The all-4 intersection is always pinned. |
-| Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot with median trajectory and gene labels (repelled with `adjustText`). |
-| Heatmap       | Signed-LFC heatmap of consensus genes across the 4 contrasts, with class swatch on the right and a horizontal colourbar at the bottom. |
+| Volcanoes     | One volcano per uploaded DEG file (six panels). Trajectory genes circled. Off-scale outliers shown as triangles at the boundary so they don't compress the panel. ↓/↑ counts in the corners. |
+| Overlap       | UpSet-style bar + dot plot of significant-gene overlaps across the six contrasts. The all-6 intersection is always pinned. |
+| Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot. When 20 min reference values are present, each line starts at a leading 20 min point (20 m → 2 h → 4 h). Gene labels repelled with `adjustText`. |
+| Heatmap       | Signed-LFC heatmap of consensus genes, with a leading 20 min column block (20m vs WT / 20m vs SAL) followed by the 2 h and 4 h contrasts, a class swatch on the right, and a horizontal colourbar at the bottom. |
 | TFs           | Per-class TF bars (gene · tf_family) plus the TF-family enrichment dot plot and table. |
-| QC            | Four sub-tabs (one per uploaded file) with PCA and pairwise correlation. |
-| Tables        | Browsable consensus and trajectory tables; bundled XLSX download with consensus_2h, consensus_4h, trajectories, and (when populated) tf_enrichment sheets. |
+| QC            | Six sub-tabs (one per uploaded file) with PCA and pairwise correlation. |
+| Tables        | Browsable consensus and trajectory tables; bundled XLSX download with consensus_20m, consensus_2h, consensus_4h, trajectories, and (when populated) tf_enrichment sheets. |
 
 ## Output
 
 Every figure has its own `Download PDF` button. The Tables tab also
-provides a single `consensus_degs.xlsx` with up to four sheets:
+provides a single `consensus_degs.xlsx` with up to five sheets:
 
+- `consensus_20m`    — strict consensus at 20 min with both LFCs and padj
 - `consensus_2h`     — strict consensus at 2 h with both LFCs and padj
 - `consensus_4h`     — strict consensus at 4 h
-- `trajectories`     — intersection set with class, both timepoints' LFCs, padj, delta, and any annotation columns
+- `trajectories`     — intersection set with class, 2 h and 4 h LFCs, the 20 min reference LFCs, padj, delta, and any annotation columns
 - `tf_enrichment`    — per-tf_family Fisher exact results (only present if any family met the size filter)
 
 PDFs use type-42 fonts so all text is editable in Illustrator. Sans-serif

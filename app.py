@@ -1,4 +1,8 @@
-"""Streamlit app: consensus DEG analysis across 2 h and 4 h CNO timepoints.
+"""Streamlit app: consensus DEG analysis across 20 min, 2 h and 4 h CNO timepoints.
+
+The trajectory set is still the 2 h ∩ 4 h intersection; the 20 min timepoint is
+carried as an earlier reference point (see ``add_earlier_reference``) and shown
+in its own volcano, overlap, QC, and funnel views.
 
 Run with:
     streamlit run app.py
@@ -16,6 +20,7 @@ from debug_log import build_log
 from analysis import (
     CLASS_ORDER,
     TimepointInputs,
+    add_earlier_reference,
     compute_pca,
     consensus_at_timepoint,
     is_tf,
@@ -45,7 +50,8 @@ st.title("Consensus DEG explorer — CRE+CNO chemogenetic activation")
 st.caption(
     "Strict consensus = significant in BOTH genetic-control (vs WT+CNO) and "
     "vehicle-control (vs CRE+SAL) AND concordant log₂FC sign. "
-    "Trajectory set = intersection of consensus genes at 2 h and 4 h."
+    "Trajectory set = intersection of consensus genes at 2 h and 4 h; "
+    "20 min is carried as an earlier reference point."
 )
 
 with st.sidebar:
@@ -55,13 +61,15 @@ with st.sidebar:
     lfc_thresh = st.number_input("|log₂FC| ≥", min_value=0.0, max_value=5.0,
                                  value=0.0, step=0.25)
     st.header("Files")
+    f_20m_g = st.file_uploader("20 min — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt"])
+    f_20m_v = st.file_uploader("20 min — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt"])
     f_2h_g = st.file_uploader("2 h — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt"])
     f_2h_v = st.file_uploader("2 h — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt"])
     f_4h_g = st.file_uploader("4 h — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt"])
     f_4h_v = st.file_uploader("4 h — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt"])
 
-if not all([f_2h_g, f_2h_v, f_4h_g, f_4h_v]):
-    st.info("Upload all four DEG files in the sidebar to start.")
+if not all([f_20m_g, f_20m_v, f_2h_g, f_2h_v, f_4h_g, f_4h_v]):
+    st.info("Upload all six DEG files in the sidebar to start.")
     st.stop()
 
 
@@ -115,6 +123,7 @@ with st.spinner("Loading DEG files…"):
     loaded = {
         label: _load(f.getvalue(), f.name)
         for label, f in [
+            ("20 min genetic", f_20m_g), ("20 min vehicle", f_20m_v),
             ("2 h genetic", f_2h_g), ("2 h vehicle", f_2h_v),
             ("4 h genetic", f_4h_g), ("4 h vehicle", f_4h_v),
         ]
@@ -122,19 +131,25 @@ with st.spinner("Loading DEG files…"):
 for label, (_, msgs) in loaded.items():
     for m in msgs:
         st.warning(f"{label}: {m}")
+deg_20m_g, deg_20m_v = loaded["20 min genetic"][0], loaded["20 min vehicle"][0]
 deg_2h_g, deg_2h_v = loaded["2 h genetic"][0], loaded["2 h vehicle"][0]
 deg_4h_g, deg_4h_v = loaded["4 h genetic"][0], loaded["4 h vehicle"][0]
 
+tp_20m = TimepointInputs(genetic=deg_20m_g, vehicle=deg_20m_v)
 tp_2h = TimepointInputs(genetic=deg_2h_g, vehicle=deg_2h_v)
 tp_4h = TimepointInputs(genetic=deg_4h_g, vehicle=deg_4h_v)
 
+cons_20m = consensus_at_timepoint(tp_20m, padj_thresh, lfc_thresh)
 cons_2h = consensus_at_timepoint(tp_2h, padj_thresh, lfc_thresh)
 cons_4h = consensus_at_timepoint(tp_4h, padj_thresh, lfc_thresh)
+# Trajectory set is unchanged (2 h ∩ 4 h); 20 min is attached as reference only.
 traj = trajectories(cons_2h, cons_4h)
+traj = add_earlier_reference(traj, tp_20m, label="20m")
 
 # Background pool + TF enrichment computed once so the Tables tab can reuse it.
 bg_union = (
-    pd.concat([deg_2h_g, deg_2h_v, deg_4h_g, deg_4h_v], ignore_index=True)
+    pd.concat([deg_20m_g, deg_20m_v, deg_2h_g, deg_2h_v, deg_4h_g, deg_4h_v],
+              ignore_index=True)
     .drop_duplicates("gene_name")
 )
 tf_enrichment_df = (
@@ -143,6 +158,8 @@ tf_enrichment_df = (
 
 funnel_rows = []
 for label, df in [
+    ("20 min: vs WT",  deg_20m_g),
+    ("20 min: vs SAL", deg_20m_v),
     ("2 h: vs WT",  deg_2h_g),
     ("2 h: vs SAL", deg_2h_v),
     ("4 h: vs WT",  deg_4h_g),
@@ -162,11 +179,12 @@ class_counts_series = (
     traj["class"].value_counts().reindex(CLASS_ORDER, fill_value=0)
 )
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Consensus @ 2 h", len(cons_2h))
-c2.metric("Consensus @ 4 h", len(cons_4h))
-c3.metric("Trajectory genes (2h ∩ 4h)", len(traj))
-c4.metric("Reversed direction", int((traj["class"] == "reversed").sum()))
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Consensus @ 20 min", len(cons_20m))
+c2.metric("Consensus @ 2 h", len(cons_2h))
+c3.metric("Consensus @ 4 h", len(cons_4h))
+c4.metric("Trajectory genes (2h ∩ 4h)", len(traj))
+c5.metric("Reversed direction", int((traj["class"] == "reversed").sum()))
 
 (
     tab_overview, tab_volcano, tab_overlap, tab_traj,
@@ -180,10 +198,11 @@ with tab_overview:
     st.markdown(
         """
         **Pipeline**
-        1. Load four DEG tables (2 h × {genetic, vehicle}, 4 h × {genetic, vehicle}).
+        1. Load six DEG tables (20 min / 2 h / 4 h, each × {genetic, vehicle}).
         2. At each timepoint: keep genes with `padj < threshold` in both contrasts
            and concordant log₂FC sign → **consensus set**.
-        3. Intersect 2 h and 4 h consensus sets → **trajectory set**.
+        3. Intersect 2 h and 4 h consensus sets → **trajectory set** (20 min is
+           carried as an earlier reference point, not a membership gate).
         4. Classify each trajectory gene by direction at each timepoint:
            *sustained up / transient up / sustained down / transient down / reversed*.
         5. Effect size for plots = log₂FC from CRE+CNO vs CRE+SAL (direct chemogenetic).
@@ -198,6 +217,8 @@ with tab_overview:
 
 with tab_volcano:
     panels = [
+        ("20 min: CRE+CNO vs WT+CNO",  deg_20m_g, f_20m_g),
+        ("20 min: CRE+CNO vs CRE+SAL", deg_20m_v, f_20m_v),
         ("2 h: CRE+CNO vs WT+CNO",  deg_2h_g, f_2h_g),
         ("2 h: CRE+CNO vs CRE+SAL", deg_2h_v, f_2h_v),
         ("4 h: CRE+CNO vs WT+CNO",  deg_4h_g, f_4h_g),
@@ -224,6 +245,8 @@ with tab_volcano:
 
 with tab_overlap:
     sets = {
+        "20m vs WT":  sig_set(deg_20m_g, padj_thresh),
+        "20m vs SAL": sig_set(deg_20m_v, padj_thresh),
         "2h vs WT":  sig_set(deg_2h_g, padj_thresh),
         "2h vs SAL": sig_set(deg_2h_v, padj_thresh),
         "4h vs WT":  sig_set(deg_4h_g, padj_thresh),
@@ -300,6 +323,8 @@ with tab_tfs:
 
 with tab_qc:
     qc_files = [
+        ("20 min: CRE+CNO vs WT+CNO",  f_20m_g, "CRE+CNO_20m", "WT+CNO_20m"),
+        ("20 min: CRE+CNO vs CRE+SAL", f_20m_v, "CRE+CNO_20m", "CRE+SAL_20m"),
         ("2 h: CRE+CNO vs WT+CNO",  f_2h_g, "CRE+CNO_2h", "WT+CNO_2h"),
         ("2 h: CRE+CNO vs CRE+SAL", f_2h_v, "CRE+CNO_2h", "CRE+SAL_2h"),
         ("4 h: CRE+CNO vs WT+CNO",  f_4h_g, "CRE+CNO_4h", "WT+CNO_4h"),
@@ -337,14 +362,17 @@ with tab_qc:
             )
 
 with tab_table:
+    st.subheader("Consensus @ 20 min")
+    st.dataframe(cons_20m, use_container_width=True, height=240)
     st.subheader("Consensus @ 2 h")
     st.dataframe(cons_2h, use_container_width=True, height=240)
     st.subheader("Consensus @ 4 h")
     st.dataframe(cons_4h, use_container_width=True, height=240)
-    st.subheader("Trajectory set (consensus at both timepoints)")
+    st.subheader("Trajectory set (consensus at 2 h and 4 h; 20 min as reference)")
     st.dataframe(traj, use_container_width=True, height=320)
 
     sheets = {
+        "consensus_20m": cons_20m,
         "consensus_2h": cons_2h,
         "consensus_4h": cons_4h,
         "trajectories": traj,
@@ -359,6 +387,7 @@ with tab_table:
     )
 
 file_inputs = {
+    "20 min genetic": f_20m_g, "20 min vehicle": f_20m_v,
     "2 h genetic": f_2h_g, "2 h vehicle": f_2h_v,
     "4 h genetic": f_4h_g, "4 h vehicle": f_4h_v,
 }
@@ -368,6 +397,7 @@ debug_text = build_log(
     files=file_inputs,
     load_warnings=load_warnings,
     counts={
+        "consensus_20m": len(cons_20m),
         "consensus_2h": len(cons_2h),
         "consensus_4h": len(cons_4h),
         "trajectory": len(traj),

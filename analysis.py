@@ -9,6 +9,9 @@ Conventions
 - Trajectory set = intersection: genes that are strict-consensus at BOTH 2h and 4h.
 - Canonical effect size for trajectories: LFC from the vehicle-control comparison
   (CRE+CNO vs CRE+SAL), since it directly captures the chemogenetic activation.
+- Earlier timepoints (e.g. 20 min) can be attached to the trajectory table as
+  reference-only columns via ``add_earlier_reference`` — they are shown as a
+  leading point/column but never change trajectory membership.
 """
 
 from __future__ import annotations
@@ -184,6 +187,39 @@ def trajectories(
 
     j["class"] = pd.Categorical(j["class"], categories=CLASS_ORDER, ordered=True)
     return j.sort_values(["class", "delta_lfc"]).reset_index(drop=True)
+
+
+def add_earlier_reference(
+    traj: pd.DataFrame,
+    tp: TimepointInputs,
+    label: str = "20m",
+) -> pd.DataFrame:
+    """Attach an earlier timepoint's fold changes to the trajectory table.
+
+    The trajectory set stays exactly as computed from the 2 h ∩ 4 h
+    intersection — this only *adds* reference columns so the earlier timepoint
+    can be drawn as a leading point in the trajectory line plot, an extra block
+    in the heatmap, and extra columns in the exported tables. Membership is
+    never gated on the earlier timepoint, so fold changes are pulled from the
+    raw DEG tables (every tested gene, not just the earlier consensus) and genes
+    absent there simply get NaN.
+
+    Adds ``lfc_genetic_<label>``, ``lfc_vehicle_<label>``, and the canonical
+    ``lfc_<label>`` (= vehicle-control LFC, matching the effect size used for
+    ``lfc_2h`` / ``lfc_4h``).
+    """
+    g = tp.genetic[["gene_name", "log2FoldChange"]].rename(
+        columns={"log2FoldChange": f"lfc_genetic_{label}"}
+    )
+    v = tp.vehicle[["gene_name", "log2FoldChange"]].rename(
+        columns={"log2FoldChange": f"lfc_vehicle_{label}"}
+    )
+    out = (
+        traj.merge(g, on="gene_name", how="left")
+            .merge(v, on="gene_name", how="left")
+    )
+    out[f"lfc_{label}"] = out[f"lfc_vehicle_{label}"]
+    return out
 
 
 CLASS_ORDER = [
