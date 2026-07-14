@@ -181,7 +181,7 @@ For each uploaded file the QC tab runs:
 | Overview      | Pipeline summary, per-comparison funnel (tested / sig / up / down at the current thresholds), and trajectory class counts. |
 | Volcanoes     | One volcano per uploaded DEG file (six panels). Trajectory genes circled. Off-scale outliers shown as triangles at the boundary so they don't compress the panel. ↓/↑ counts in the corners. |
 | Overlap       | UpSet-style bar + dot plot of significant-gene overlaps across the six contrasts. The all-6 intersection is always pinned. |
-| Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot. When 20 min reference values are present, each line starts at a leading 20 min point (20 m → 2 h → 4 h). Gene labels repelled with `adjustText`. |
+| Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot. When 20 min reference values are present, each line starts at a leading 20 min point (20 m → 2 h → 4 h). The largest-|LFC| genes get an endpoint dot and a leader line to a vertically-spread label, so each label points unambiguously at its trajectory. |
 | Heatmap       | Signed-LFC heatmap of consensus genes, with a leading 20 min column block (20m vs WT / 20m vs SAL) followed by the 2 h and 4 h contrasts, a class swatch on the right, and a horizontal colourbar at the bottom. |
 | TFs           | Per-class TF bars (gene · tf_family) plus the TF-family enrichment dot plot and table. |
 | QC            | Six sub-tabs (one per uploaded file) with PCA and pairwise correlation. |
@@ -230,9 +230,10 @@ or pre-split.
 **Heatmap slider is missing** — when fewer than four trajectory genes
 exist, the heatmap shows them all without a slider.
 
-**`adjustText` not installed** — volcano labels and trajectory labels
-fall back to either no repulsion (volcanoes) or a deterministic vertical
-stacking pass (trajectories). Install `adjustText` for nicer figures.
+**`adjustText` not installed** — volcano gene labels fall back to no
+repulsion (they may overlap). Install `adjustText` for nicer volcanoes. The
+trajectory line plot does not use `adjustText`; its labels are placed with a
+built-in deterministic leader-line layout.
 
 **`scipy` not installed** — TF enrichment quietly returns an empty
 DataFrame. Spearman ρ in the LFC scatter falls back to Pearson r.

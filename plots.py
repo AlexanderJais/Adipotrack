@@ -236,10 +236,12 @@ def trajectory_lines(
     panel_width: float = 2.8,
     panel_height: float = 4.2,
 ) -> plt.Figure:
-    """One line per gene from 2 h to 4 h, faceted by class.
+    """One line per gene across timepoints, faceted by class.
 
-    Each panel reserves a right-hand label gutter (x = 1.0 → 1.6) so labels
-    can be repelled outward without colliding with the trajectories.
+    Each panel reserves a right-hand label gutter. Labelled genes get a dot at
+    their final-timepoint endpoint and a leader line to the label, which is
+    spread vertically so labels never overlap while still pointing at the line
+    they belong to.
     """
     apply_style()
     classes = [c for c in CLASS_ORDER if (traj["class"] == c).any()]
@@ -262,10 +264,13 @@ def trajectory_lines(
     x_pos = list(range(len(x_cols)))
     last_x = x_pos[-1]
 
-    # Shared symmetric y-range so panels can be compared at a glance.
+    # Shared symmetric y-range so panels can be compared at a glance. Use the
+    # full data extent (not a 99th percentile) so no trajectory line is ever
+    # clipped by the panel boundary; a little headroom leaves space for labels.
     arr = np.concatenate([traj[c].to_numpy(dtype=float) for c in x_cols])
-    if arr.size:
-        y_lim = max(float(np.nanquantile(np.abs(arr), 0.99)) * 1.18, 1.0)
+    finite = arr[np.isfinite(arr)]
+    if finite.size:
+        y_lim = max(float(np.abs(finite).max()) * 1.08, 1.0)
     else:
         y_lim = 1.0
 
@@ -275,12 +280,7 @@ def trajectory_lines(
     if n == 1:
         axes = [axes]
 
-    try:
-        from adjustText import adjust_text
-        have_adjust = True
-    except ImportError:
-        have_adjust = False
-
+    label_x = last_x + 0.24
     for ax, cls in zip(axes, classes):
         sub = traj[traj["class"] == cls]
 
@@ -293,62 +293,29 @@ def trajectory_lines(
         ax.axhline(0, color="black", lw=0.3, zorder=1)
         ax.set_xticks(x_pos)
         ax.set_xticklabels(x_labels)
-        ax.set_xlim(-0.15, last_x + 0.65)  # extra room on the right for labels
+        ax.set_xlim(-0.15, last_x + 0.75)  # extra room on the right for labels
         ax.set_ylim(-y_lim, y_lim)
         ax.set_title(f"{cls.replace('_', ' ')}\n(n = {len(sub)})")
 
-        # Right-edge label gutter
+        # Right-edge labels: pick the largest-|LFC| genes, mark each one's
+        # endpoint with a dot, and draw a leader line to a vertically-spread
+        # label so the label unambiguously belongs to its trajectory.
         if not sub.empty:
             extreme = sub.iloc[
                 sub["lfc_4h"].abs().to_numpy().argsort()[::-1]
             ].head(label_top_n)
+            y_end = extreme["lfc_4h"].to_numpy(dtype=float)
+            names = list(extreme["gene_name"])
 
-            anchor_x = np.full(len(extreme), float(last_x))
-            anchor_y = extreme["lfc_4h"].to_numpy(dtype=float)
-
-            texts = [
-                ax.text(
-                    last_x + 0.18, y, name,
-                    fontsize=5.5, va="center", ha="left", zorder=6,
-                )
-                for y, name in zip(anchor_y, extreme["gene_name"])
-            ]
-
-            if have_adjust and texts:
-                # adjustText API differs across versions — try kwargs that
-                # work on 0.8 / 1.x and silently fall back if something
-                # in the call signature changed.
-                try:
-                    adjust_text(
-                        texts,
-                        x=anchor_x.tolist(),
-                        y=anchor_y.tolist(),
-                        ax=ax,
-                        arrowprops=dict(
-                            arrowstyle="-", color="grey",
-                            lw=0.3, shrinkA=0, shrinkB=2,
-                        ),
-                        only_move={"text": "y", "static": "y", "explode": "y"},
-                        expand=(1.1, 1.4),
-                        force_text=(0.0, 0.6),
-                        autoalign=False,
-                        avoid_self=True,
-                    )
-                except TypeError:
-                    adjust_text(
-                        texts,
-                        x=anchor_x.tolist(),
-                        y=anchor_y.tolist(),
-                        ax=ax,
-                        arrowprops=dict(
-                            arrowstyle="-", color="grey", lw=0.3,
-                        ),
-                        only_move={"points": "", "texts": "y"},
-                    )
-            else:
-                # Plain fallback: nudge labels apart by sorting on y and
-                # spacing them at a minimum vertical separation.
-                _stack_labels(texts, ax, min_gap=y_lim * 0.06)
+            label_y = _spread_labels(y_end, min_gap=y_lim * 0.09,
+                                     lo=-y_lim, hi=y_lim)
+            for ye, yl, name in zip(y_end, label_y, names):
+                ax.plot([last_x], [ye], "o", ms=2.2,
+                        color=CLASS_COLORS[cls], zorder=5, clip_on=False)
+                ax.plot([last_x, label_x - 0.02], [ye, yl],
+                        color="grey", lw=0.3, zorder=4, clip_on=False)
+                ax.text(label_x, yl, name, fontsize=5.5, va="center",
+                        ha="left", zorder=6)
 
     axes[0].set_ylabel("log$_2$ fold change (CRE+CNO vs CRE+SAL)")
     fig.tight_layout()
@@ -561,18 +528,40 @@ def sample_corr_heatmap(corr: pd.DataFrame, metadata: pd.DataFrame,
     return fig
 
 
-def _stack_labels(texts, ax, min_gap: float) -> None:
-    """Greedy vertical-stacking fallback if adjustText isn't available."""
-    items = sorted(
-        ((t, t.get_position()[1]) for t in texts),
-        key=lambda p: p[1],
-    )
-    last_y = -np.inf
-    for t, y in items:
-        new_y = max(y, last_y + min_gap)
-        x = t.get_position()[0]
-        t.set_position((x, new_y))
-        last_y = new_y
+def _spread_labels(y, min_gap: float, lo: float, hi: float) -> np.ndarray:
+    """Vertically de-overlap label positions while staying near their targets.
+
+    Given desired y-positions ``y`` (one per label), return positions in the
+    same order such that adjacent labels (in sort order) are at least
+    ``min_gap`` apart, kept within ``[lo, hi]`` where possible and otherwise
+    spread evenly. Deterministic — no dependency on adjustText — so the leader
+    lines drawn to these positions always line up.
+    """
+    y = np.asarray(y, dtype=float)
+    if y.size == 0:
+        return y
+    order = np.argsort(y)
+    s = y[order].copy()
+    # Push up from the bottom to enforce the minimum gap.
+    for i in range(1, len(s)):
+        if s[i] - s[i - 1] < min_gap:
+            s[i] = s[i - 1] + min_gap
+    # If the stack overflowed the top, slide it down as a block.
+    if s[-1] > hi:
+        s -= s[-1] - hi
+    # If it now underflows the bottom, either pin-and-repush or, when the
+    # labels can't all fit at min_gap, distribute them evenly across the range.
+    if s[0] < lo:
+        if (len(s) - 1) * min_gap <= (hi - lo):
+            s[0] = lo
+            for i in range(1, len(s)):
+                if s[i] - s[i - 1] < min_gap:
+                    s[i] = s[i - 1] + min_gap
+        else:
+            s = np.linspace(lo, hi, len(s))
+    out = np.empty_like(s)
+    out[order] = s
+    return out
 
 
 def upset_plot(sets: dict[str, set[str]], max_rows: int = 20) -> plt.Figure:
