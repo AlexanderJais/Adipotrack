@@ -36,6 +36,10 @@ from analysis import (
 )
 from plots import (
     clock_bars,
+    clock_dial,
+    clock_network,
+    clock_phase_heatmap,
+    clock_phase_scatter,
     clock_trajectory,
     fig_to_bytes,
     heatmap,
@@ -402,6 +406,56 @@ with tab_clock:
         "Clock trajectory PDF", fig_to_bytes(f_ctraj, "pdf"),
         file_name="clock_trajectory.pdf",
         mime="application/pdf", key="clock_traj_pdf",
+    )
+
+    st.divider()
+    st.markdown(
+        "##### Phase-based views\n"
+        "Genes are positioned by their **reference peak phase** (ZT) — "
+        "approximate mouse peripheral-clock acrophases from the literature "
+        "(`CLOCK_GENES` in `analysis.py`), **not** a rhythm measured here. "
+        "These views ask whether the perturbation is organised by a gene's "
+        "normal peak time."
+    )
+
+    pc1, pc2 = st.columns([1, 1])
+    f_dial = clock_dial(clock_snap, padj_thresh,
+                        title=f"Clock-face @ {snap_tp}  ({contrast_short})")
+    pc1.pyplot(f_dial, use_container_width=True)
+    pc1.download_button(
+        "Clock-face PDF", fig_to_bytes(f_dial, "pdf"),
+        file_name=f"clock_dial_{snap_tp.replace(' ', '')}.pdf",
+        mime="application/pdf", key="clock_dial_pdf",
+    )
+
+    f_psc = clock_phase_scatter(
+        clock_snap, padj_thresh,
+        title=f"Regulation by phase @ {snap_tp}  ({contrast_short})")
+    pc2.pyplot(f_psc, use_container_width=True)
+    pc2.download_button(
+        "Phase-vs-log₂FC PDF", fig_to_bytes(f_psc, "pdf"),
+        file_name=f"clock_phase_scatter_{snap_tp.replace(' ', '')}.pdf",
+        mime="application/pdf", key="clock_psc_pdf",
+    )
+
+    pc3, pc4 = st.columns([1, 1])
+    f_net = clock_network(clock_snap,
+                          title=f"Clock TTFL @ {snap_tp}  ({contrast_short})")
+    pc3.pyplot(f_net, use_container_width=True)
+    pc3.download_button(
+        "TTFL network PDF", fig_to_bytes(f_net, "pdf"),
+        file_name=f"clock_network_{snap_tp.replace(' ', '')}.pdf",
+        mime="application/pdf", key="clock_net_pdf",
+    )
+
+    f_pheat = clock_phase_heatmap(
+        clock_panel, list(deg_by_tp.keys()),
+        title=f"Clock genes by phase ({contrast_short})")
+    pc4.pyplot(f_pheat, use_container_width=True)
+    pc4.download_button(
+        "Phase heatmap PDF", fig_to_bytes(f_pheat, "pdf"),
+        file_name="clock_phase_heatmap.pdf",
+        mime="application/pdf", key="clock_pheat_pdf",
     )
 
     st.subheader(f"Clock gene table ({contrast_short})")

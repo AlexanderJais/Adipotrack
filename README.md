@@ -35,8 +35,9 @@ the app produces:
    present at 2 h but weakens by 4 h.
 4. **Figures** (volcanoes, UpSet-style overlap, LFC-2h-vs-4h scatter,
    per-class trajectory lines, signed-LFC heatmap, TF panel,
-   TF-family enrichment dot plot, a core **circadian clock** antiphase
-   panel, replicate PCA, sample correlation).
+   TF-family enrichment dot plot, a core **circadian clock** panel
+   (antiphase bars, clock-face dial, phase-vs-log₂FC, TTFL network,
+   phase-ordered heatmap), replicate PCA, sample correlation).
 5. **Downloads**: every figure as PDF (vector, type-42 fonts, editable in
    Illustrator) and a single XLSX with the consensus, trajectory, and
    TF-enrichment tables.
@@ -184,6 +185,36 @@ accessory) and a **phase family** (`positive`, `repressive`, `accessory`).
   genes at the selected snapshot; a large positive value is the classic
   driven-antiphase signature.
 
+**Phase-based views.** Each core clock gene also carries a reference peak
+phase (`peak_zt`, ZT 0–24) — an approximate mouse peripheral-clock acrophase
+from published atlases (e.g. Zhang 2014), **not** a rhythm measured in this
+experiment. Genes with no robust rhythm (`Clock`, the post-translational
+accessory factors) carry `None` and are dropped from these figures. Edit the
+`peak_zt` column in `CLOCK_GENES` to use your own reference; every phase
+figure reads straight from it. The views:
+
+- **Clock-face dial** (`clock_dial`) — polar plot with each gene at its peak
+  ZT (ZT0 top, clockwise), radius = `|log₂FC|`, colour = signed log₂FC, night
+  (ZT12–24) shaded. A donut hole spreads unchanged genes around the ring; only
+  moved genes (significant or `|log₂FC| ≥ 0.5`) are labelled.
+- **Phase-vs-log₂FC** (`clock_phase_scatter`) — log₂FC against reference peak
+  phase, with a least-squares **cosine fit** (`fit_phase_cosine`) summarising
+  whether regulation is a coherent function of phase (reports the fitted peak
+  ZT, amplitude, and R²). This is a fit of the perturbation effect *across
+  genes by their reference phase*, not a time-series rhythmicity test.
+- **TTFL network** (`clock_network`) — the core feedback-loop schematic
+  (BMAL1/CLOCK → Per/Cry/Rev-erb/Dec/outputs, with ROR/Rev-erb acting back on
+  *Bmal1*) with each module node coloured by the mean log₂FC of its genes;
+  activation vs repression edges are distinguished.
+- **Phase-ordered heatmap** (`clock_phase_heatmap`) — clock genes as rows
+  sorted by peak phase × the three timepoints, with a cyclic phase swatch on
+  the left.
+
+Not included on purpose: circadian rhythmicity methods (JTK_CYCLE, RAIN,
+MetaCycle, cosinor over time, actograms). Those need day-spanning sampling at
+fixed circadian time, which this 20 min / 2 h / 4 h post-stimulus design does
+not provide.
+
 Genes absent from a file are reported as "not detected" and left out of the
 bar chart (kept as `NaN` in the table). The clock table downloads separately
 as `clock_genes.xlsx`.
@@ -210,7 +241,7 @@ For each uploaded file the QC tab runs:
 | Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot. When 20 min reference values are present, each line starts at a leading 20 min point (20 m → 2 h → 4 h). The largest-|LFC| genes get an endpoint dot and a leader line to a vertically-spread label, so each label points unambiguously at its trajectory. |
 | Heatmap       | Signed-LFC heatmap of consensus genes, with a leading 20 min column block (20m vs WT / 20m vs SAL) followed by the 2 h and 4 h contrasts, a class swatch on the right, and a horizontal colourbar at the bottom. |
 | TFs           | Per-class TF bars (gene · tf_family) plus the TF-family enrichment dot plot and table. |
-| Circadian     | Core clock panel: a diverging bar chart of clock-gene log₂FC grouped by TTFL role (a snapshot at a chosen timepoint/contrast), a clock-gene trajectory across 20 min → 2 h → 4 h coloured by phase family, an antiphase-separation summary, and a downloadable clock-gene table. |
+| Circadian     | Core clock panel: antiphase-separation summary, a diverging bar chart of clock-gene log₂FC grouped by TTFL role, a clock-gene trajectory across 20 min → 2 h → 4 h coloured by phase family, and four phase-based views (clock-face dial, phase-vs-log₂FC with cosine fit, TTFL network, phase-ordered heatmap). Contrast + snapshot-timepoint selectors; downloadable clock-gene table. |
 | QC            | Six sub-tabs (one per uploaded file) with PCA and pairwise correlation. |
 | Tables        | Browsable consensus and trajectory tables; bundled XLSX download with consensus_20m, consensus_2h, consensus_4h, trajectories, and (when populated) tf_enrichment sheets. |
 

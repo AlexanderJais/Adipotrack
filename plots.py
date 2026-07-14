@@ -18,6 +18,7 @@ from analysis import (
     CLASS_ORDER,
     CLOCK_FAMILY_COLORS,
     CLOCK_ROLES,
+    fit_phase_cosine,
 )
 
 
@@ -906,4 +907,277 @@ def clock_trajectory(
     ax.legend(handles=handles, loc="upper left", fontsize=5,
               bbox_to_anchor=(0.0, 1.0))
     fig.tight_layout(rect=(0, 0, 0.82, 1))
+    return fig
+
+
+def _phase_theta(zt: np.ndarray) -> np.ndarray:
+    """Map Zeitgeber time (0–24 h) to a polar angle for a clock face:
+    ZT0 at the top, advancing clockwise (ZT6 right, ZT12 bottom, ZT18 left)."""
+    return (np.asarray(zt, dtype=float) / 24.0) * 2.0 * np.pi
+
+
+def clock_dial(
+    clock: pd.DataFrame,
+    padj_thresh: float = 0.05,
+    title: str = "Clock-face dial",
+) -> plt.Figure:
+    """Radial clock face: each gene at its reference peak phase (ZT), radius =
+    |log2FC|, colour = signed log2FC. Night half (ZT12–24) is lightly shaded.
+
+    Positions come from the literature reference phases in ``CLOCK_GENES`` — a
+    perturbation-by-known-phase view, not a measured rhythm.
+    """
+    apply_style()
+    d = clock[clock["found"] & np.isfinite(clock["peak_zt"])].copy()
+    if d.empty:
+        fig, ax = plt.subplots(figsize=(3.4, 2))
+        ax.text(0.5, 0.5, "No phase-annotated clock genes found",
+                ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    zt = d["peak_zt"].to_numpy(dtype=float)
+    lfc = d["lfc"].to_numpy(dtype=float)
+    padj = d["padj"].to_numpy(dtype=float)
+    sig = np.isfinite(padj) & (padj < padj_thresh)
+    theta = _phase_theta(zt)
+    r = np.abs(lfc)
+    r_max = max(float(np.nanmax(r)) * 1.15, 1.0)
+    vmax = max(float(np.nanmax(np.abs(lfc))), 0.5)
+
+    fig = plt.figure(figsize=(4.6, 4.2))
+    ax = fig.add_subplot(111, projection="polar")
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+    # A donut hole (r=0 sits on an inner ring) so genes with |log2FC|≈0 spread
+    # around the ring by phase instead of collapsing onto the centre.
+    r_inner = r_max * 0.35
+    ax.set_rorigin(-r_inner)
+
+    # Night shading (ZT12–24).
+    night = np.linspace(_phase_theta(12), _phase_theta(24), 60)
+    ax.fill_between(night, 0, r_max, color="#000000", alpha=0.05, zorder=0)
+
+    sc = ax.scatter(theta[sig], r[sig], c=lfc[sig], cmap="RdBu_r",
+                    vmin=-vmax, vmax=vmax, s=42, edgecolor="black",
+                    linewidths=0.4, zorder=4)
+    if (~sig).any():
+        ax.scatter(theta[~sig], r[~sig], c=lfc[~sig], cmap="RdBu_r",
+                   vmin=-vmax, vmax=vmax, s=26, edgecolor="none",
+                   alpha=0.4, zorder=3)
+    # Label only the genes that actually moved (significant, or |log2FC| ≥ 0.5)
+    # so the unchanged inner-ring cluster stays uncluttered.
+    lab_mask = sig | (np.abs(lfc) >= 0.5)
+    for th, rr, name, show in zip(theta, r, d["label"], lab_mask):
+        if show:
+            ax.text(th, rr + r_max * 0.07, name, fontsize=4.5,
+                    ha="center", va="center", zorder=6)
+
+    ax.set_rlim(0, r_max)
+    ax.set_rlabel_position(135)
+    ax.set_xticks([_phase_theta(z) for z in (0, 6, 12, 18)])
+    ax.set_xticklabels(["ZT0", "ZT6", "ZT12", "ZT18"], fontsize=6)
+    ax.tick_params(pad=0.5)
+    ax.set_title(title, pad=14)
+    ax.grid(color="#dddddd", lw=0.4)
+
+    cbar = fig.colorbar(sc, ax=ax, fraction=0.045, pad=0.10)
+    cbar.set_label("log$_2$FC", fontsize=6)
+    cbar.ax.tick_params(labelsize=5)
+    cbar.outline.set_linewidth(0.4)
+    ax.text(0.5, -0.06,
+            "radius = |log$_2$FC| · night (ZT12–24) shaded · only moved genes labelled",
+            transform=ax.transAxes, fontsize=5, color="#666666",
+            ha="center", va="top")
+    fig.tight_layout()
+    return fig
+
+
+def clock_phase_scatter(
+    clock: pd.DataFrame,
+    padj_thresh: float = 0.05,
+    title: str = "Regulation by reference phase",
+) -> plt.Figure:
+    """log2FC vs each gene's reference peak phase (ZT), with a least-squares
+    cosine fit summarising phase-dependent regulation. Night (ZT12–24) shaded.
+    """
+    apply_style()
+    d = clock[clock["found"] & np.isfinite(clock["peak_zt"])].copy()
+    fig, ax = plt.subplots(figsize=(4.2, 3.4))
+    if d.empty:
+        ax.text(0.5, 0.5, "No phase-annotated clock genes found",
+                ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    zt = d["peak_zt"].to_numpy(dtype=float)
+    lfc = d["lfc"].to_numpy(dtype=float)
+    padj = d["padj"].to_numpy(dtype=float)
+    sig = np.isfinite(padj) & (padj < padj_thresh)
+
+    ax.axvspan(12, 24, color="#000000", alpha=0.05, zorder=0)
+    ax.axhline(0, color="black", lw=0.4, zorder=1)
+
+    colors = np.where(lfc > 0, "#D55E00", "#0072B2")
+    ax.scatter(zt[sig], lfc[sig], c=colors[sig], s=26, edgecolor="black",
+               linewidths=0.4, zorder=4)
+    if (~sig).any():
+        ax.scatter(zt[~sig], lfc[~sig], c=colors[~sig], s=18, alpha=0.4,
+                   edgecolor="none", zorder=3)
+    for x, y, name in zip(zt, lfc, d["label"]):
+        ax.text(x + 0.25, y, name, fontsize=4.5, va="center", ha="left",
+                zorder=5)
+
+    fit = fit_phase_cosine(zt, lfc)
+    if np.isfinite(fit["r2"]):
+        g = np.linspace(0, 24, 200)
+        w = 2 * np.pi / 24.0
+        yhat = fit["mesor"] + fit["amplitude"] * np.cos(w * (g - fit["peak_zt"]))
+        ax.plot(g, yhat, color="#444444", lw=0.9, ls="--", zorder=2)
+        ax.text(0.02, 0.98,
+                f"cosine peak ≈ ZT{fit['peak_zt']:.1f}\n"
+                f"amp = {fit['amplitude']:.2f}, R² = {fit['r2']:.2f}",
+                transform=ax.transAxes, fontsize=5, va="top", ha="left")
+
+    ax.set_xlim(0, 24)
+    ax.set_xticks([0, 6, 12, 18, 24])
+    ax.set_xlabel("reference peak phase (ZT, h)")
+    ax.set_ylabel("log$_2$ fold change")
+    ax.set_title(title)
+    fig.tight_layout()
+    return fig
+
+
+def clock_network(
+    clock: pd.DataFrame,
+    title: str = "Clock TTFL — module regulation",
+) -> plt.Figure:
+    """Schematic of the core transcription–translation feedback loop with each
+    module coloured by the mean log2FC of its detected genes."""
+    apply_style()
+    from matplotlib.patches import FancyArrowPatch, Circle
+
+    def module_mean(mask):
+        v = clock.loc[mask & clock["found"], "lfc"]
+        return float(v.mean()) if len(v) else np.nan
+
+    role = clock["role"].astype(str)
+    fam = clock["family"]
+    modules = {
+        "bmal":   ("BMAL1 : CLOCK\nNPAS2", 0.0, 1.35, role == "activator"),
+        "percry": ("PER / CRY", 2.1, 0.1, role == "per_cry"),
+        "reverb": ("REV-ERB", 0.75, -1.3, (role == "nr") & (fam == "repressive")),
+        "ror":    ("ROR", -2.1, 0.1, (role == "nr") & (fam == "positive")),
+        "dec":    ("DEC", -0.75, -1.3, role == "dec"),
+        "output": ("DBP / TEF / HLF", 2.1, -1.5, role == "output"),
+    }
+    vals = {k: module_mean(m) for k, (_, _, _, m) in modules.items()}
+    finite = [v for v in vals.values() if np.isfinite(v)]
+    vmax = max(max(abs(v) for v in finite), 0.5) if finite else 1.0
+    cmap = mpl.colormaps["RdBu_r"]
+    norm = mpl.colors.Normalize(vmin=-vmax, vmax=vmax)
+
+    fig, ax = plt.subplots(figsize=(4.8, 4.4))
+    # Edges: (src, dst, kind) — "act" = activation arrow, "rep" = repression.
+    edges = [
+        ("bmal", "percry", "act"), ("bmal", "reverb", "act"),
+        ("bmal", "dec", "act"), ("bmal", "output", "act"),
+        ("percry", "bmal", "rep"), ("reverb", "bmal", "rep"),
+        ("dec", "bmal", "rep"), ("ror", "bmal", "act"),
+    ]
+    pos = {k: (x, y) for k, (_, x, y, _) in modules.items()}
+    R = 0.42
+    for s, t, kind in edges:
+        x0, y0 = pos[s]
+        x1, y1 = pos[t]
+        style = "-|>" if kind == "act" else "-["
+        color = "#333333" if kind == "act" else "#B22222"
+        ax.add_patch(FancyArrowPatch(
+            (x0, y0), (x1, y1), shrinkA=R * 62, shrinkB=R * 62,
+            arrowstyle=style, mutation_scale=8, lw=0.8, color=color,
+            connectionstyle="arc3,rad=0.12", zorder=1,
+        ))
+
+    for k, (name, x, y, _) in modules.items():
+        v = vals[k]
+        face = cmap(norm(v)) if np.isfinite(v) else "#eeeeee"
+        ax.add_patch(Circle((x, y), R, facecolor=face, edgecolor="black",
+                            lw=0.6, zorder=3))
+        txt = name + (f"\n{v:+.2f}" if np.isfinite(v) else "\nn.d.")
+        # dark text on light fill, white on saturated fill
+        lum = 0 if not np.isfinite(v) else abs(norm(v) - 0.5) * 2
+        tc = "white" if lum > 0.6 else "black"
+        ax.text(x, y, txt, ha="center", va="center", fontsize=5,
+                color=tc, zorder=4)
+
+    ax.set_xlim(-3.0, 3.2)
+    ax.set_ylim(-2.4, 2.2)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title(title)
+    # Legend for edge types
+    ax.plot([], [], color="#333333", lw=0.9, label="activation")
+    ax.plot([], [], color="#B22222", lw=0.9, label="repression")
+    ax.legend(loc="lower left", fontsize=5, frameon=False)
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.04, pad=0.02)
+    cbar.set_label("module mean log$_2$FC", fontsize=6)
+    cbar.ax.tick_params(labelsize=5)
+    cbar.outline.set_linewidth(0.4)
+    fig.tight_layout()
+    return fig
+
+
+def clock_phase_heatmap(
+    panel: pd.DataFrame,
+    tp_labels: list[str],
+    title: str = "Clock genes ordered by phase",
+) -> plt.Figure:
+    """Heatmap of clock-gene log2FC across timepoints, rows ordered by the
+    reference peak phase. A cyclic phase swatch on the left shows the ZT order.
+    """
+    apply_style()
+    lfc_cols = [f"lfc_{tp}" for tp in tp_labels if f"lfc_{tp}" in panel.columns]
+    d = panel[np.isfinite(panel["peak_zt"])].copy()
+    d = d.sort_values("peak_zt")
+    if d.empty or not lfc_cols:
+        fig, ax = plt.subplots(figsize=(3.4, 2))
+        ax.text(0.5, 0.5, "No phase-annotated clock genes", ha="center",
+                va="center")
+        ax.axis("off")
+        return fig
+
+    mat = d[lfc_cols].to_numpy(dtype=float)
+    n = len(d)
+    finite = mat[np.isfinite(mat)]
+    vmax = max(float(np.nanquantile(np.abs(finite), 0.99)), 0.5) if finite.size else 1.0
+
+    fig, ax = plt.subplots(figsize=(0.6 * len(lfc_cols) + 2.2, 0.20 * n + 1.3))
+    im = ax.imshow(mat, aspect="auto", cmap="RdBu_r", vmin=-vmax, vmax=vmax,
+                   interpolation="nearest")
+    ax.set_xticks(range(len(lfc_cols)))
+    ax.set_xticklabels(tp_labels[:len(lfc_cols)])
+    ax.set_yticks(range(n))
+    ax.set_yticklabels(
+        [f"{lab}  ·  ZT{zt:.0f}" for lab, zt in zip(d["label"], d["peak_zt"])],
+        fontsize=5,
+    )
+    ax.tick_params(left=False, bottom=False)
+
+    # Cyclic phase swatch to the left of the grid (twilight = circular map).
+    phase_cmap = mpl.colormaps["twilight"]
+    for i, zt in enumerate(d["peak_zt"].to_numpy(dtype=float)):
+        ax.add_patch(plt.Rectangle(
+            (-0.62, i - 0.5), 0.22, 1.0, facecolor=phase_cmap((zt % 24) / 24.0),
+            edgecolor="none", clip_on=False,
+        ))
+    ax.set_xlim(-0.7, len(lfc_cols) - 0.5)
+
+    cbar = fig.colorbar(im, ax=ax, orientation="horizontal",
+                        fraction=0.06, pad=0.18, aspect=24, shrink=0.7)
+    cbar.set_label("log$_2$FC", fontsize=6)
+    cbar.ax.tick_params(labelsize=5)
+    cbar.outline.set_linewidth(0.4)
+    ax.set_title(title)
+    fig.tight_layout()
     return fig

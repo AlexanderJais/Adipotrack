@@ -259,35 +259,45 @@ CLOCK_ROLES = [
     ("accessory", "Accessory / post-translational"),
 ]
 
-# (role, family, display label, [symbols to try in order]). Family is one of
-# "positive", "repressive", "accessory" and drives the antiphase colouring and
-# summary; role drives the functional grouping in the bar chart.
+# (role, family, display label, reference peak phase, [symbols to try]).
+#
+# Family ("positive"/"repressive"/"accessory") drives the antiphase colouring
+# and summary; role drives the functional grouping in the bar chart.
+#
+# ``peak_zt`` is the gene's approximate transcript acrophase in mouse
+# peripheral tissue (Zeitgeber time, 0–24 h; ZT0 = lights on), taken from
+# published circadian atlases (e.g. Zhang et al. 2014 PNAS). It is a REFERENCE
+# phase for positioning genes on the clock-face / phase plots — NOT a phase
+# measured in this experiment. Genes with no robust/low-amplitude rhythm
+# (Clock, the post-translational accessory factors) carry ``None`` and are
+# omitted from the phase-based figures. Edit these values to match your own
+# tissue/reference; every phase figure reads straight from this column.
 CLOCK_GENES = [
-    ("activator", "positive",   "Bmal1 (Arntl)",   ["Arntl", "Bmal1"]),
-    ("activator", "positive",   "Bmal2 (Arntl2)",  ["Arntl2", "Bmal2"]),
-    ("activator", "positive",   "Clock",           ["Clock"]),
-    ("activator", "positive",   "Npas2",           ["Npas2"]),
-    ("per_cry",   "repressive", "Per1",            ["Per1"]),
-    ("per_cry",   "repressive", "Per2",            ["Per2"]),
-    ("per_cry",   "repressive", "Per3",            ["Per3"]),
-    ("per_cry",   "repressive", "Cry1",            ["Cry1"]),
-    ("per_cry",   "repressive", "Cry2",            ["Cry2"]),
-    ("nr",        "repressive", "Rev-erbα (Nr1d1)", ["Nr1d1"]),
-    ("nr",        "repressive", "Rev-erbβ (Nr1d2)", ["Nr1d2"]),
-    ("nr",        "positive",   "Rorα (Rora)",     ["Rora"]),
-    ("nr",        "positive",   "Rorβ (Rorb)",     ["Rorb"]),
-    ("nr",        "positive",   "Rorγ (Rorc)",     ["Rorc"]),
-    ("dec",       "repressive", "Dec1 (Bhlhe40)",  ["Bhlhe40", "Dec1", "Stra13"]),
-    ("dec",       "repressive", "Dec2 (Bhlhe41)",  ["Bhlhe41", "Dec2", "Sharp1"]),
-    ("output",    "repressive", "Dbp",             ["Dbp"]),
-    ("output",    "repressive", "Tef",             ["Tef"]),
-    ("output",    "repressive", "Hlf",             ["Hlf"]),
-    ("output",    "positive",   "Nfil3 (E4bp4)",   ["Nfil3", "E4bp4"]),
-    ("accessory", "repressive", "Chrono (Ciart)",  ["Ciart", "Gm129"]),
-    ("accessory", "accessory",  "Timeless",        ["Timeless", "Tim"]),
-    ("accessory", "accessory",  "Csnk1d",          ["Csnk1d"]),
-    ("accessory", "accessory",  "Csnk1e",          ["Csnk1e"]),
-    ("accessory", "accessory",  "Fbxl3",           ["Fbxl3"]),
+    ("activator", "positive",   "Bmal1 (Arntl)",   23.0, ["Arntl", "Bmal1"]),
+    ("activator", "positive",   "Bmal2 (Arntl2)",  23.0, ["Arntl2", "Bmal2"]),
+    ("activator", "positive",   "Clock",           None, ["Clock"]),
+    ("activator", "positive",   "Npas2",           22.0, ["Npas2"]),
+    ("per_cry",   "repressive", "Per1",            11.0, ["Per1"]),
+    ("per_cry",   "repressive", "Per2",            13.0, ["Per2"]),
+    ("per_cry",   "repressive", "Per3",            12.0, ["Per3"]),
+    ("per_cry",   "repressive", "Cry1",            18.0, ["Cry1"]),
+    ("per_cry",   "repressive", "Cry2",            10.0, ["Cry2"]),
+    ("nr",        "repressive", "Rev-erbα (Nr1d1)", 7.0, ["Nr1d1"]),
+    ("nr",        "repressive", "Rev-erbβ (Nr1d2)", 8.0, ["Nr1d2"]),
+    ("nr",        "positive",   "Rorα (Rora)",      0.0, ["Rora"]),
+    ("nr",        "positive",   "Rorβ (Rorb)",      2.0, ["Rorb"]),
+    ("nr",        "positive",   "Rorγ (Rorc)",     20.0, ["Rorc"]),
+    ("dec",       "repressive", "Dec1 (Bhlhe40)",   6.0, ["Bhlhe40", "Dec1", "Stra13"]),
+    ("dec",       "repressive", "Dec2 (Bhlhe41)",   5.0, ["Bhlhe41", "Dec2", "Sharp1"]),
+    ("output",    "repressive", "Dbp",              9.0, ["Dbp"]),
+    ("output",    "repressive", "Tef",             10.0, ["Tef"]),
+    ("output",    "repressive", "Hlf",             11.0, ["Hlf"]),
+    ("output",    "positive",   "Nfil3 (E4bp4)",    1.0, ["Nfil3", "E4bp4"]),
+    ("accessory", "repressive", "Chrono (Ciart)",  11.0, ["Ciart", "Gm129"]),
+    ("accessory", "accessory",  "Timeless",        None, ["Timeless", "Tim"]),
+    ("accessory", "accessory",  "Csnk1d",          None, ["Csnk1d"]),
+    ("accessory", "accessory",  "Csnk1e",          None, ["Csnk1e"]),
+    ("accessory", "accessory",  "Fbxl3",           None, ["Fbxl3"]),
 ]
 
 CLOCK_FAMILY_COLORS = {
@@ -314,13 +324,14 @@ def clock_gene_table(deg: pd.DataFrame) -> pd.DataFrame:
 
     role_labels = dict(CLOCK_ROLES)
     rows = []
-    for role, family, label, symbols in CLOCK_GENES:
+    for role, family, label, peak_zt, symbols in CLOCK_GENES:
         hit = next((lut[s.lower()] for s in symbols if s.lower() in lut), None)
         rows.append({
             "role": role,
             "role_label": role_labels[role],
             "family": family,
             "label": label,
+            "peak_zt": peak_zt if peak_zt is not None else np.nan,
             "gene": hit[0] if hit else symbols[0],
             "lfc": hit[1] if hit else np.nan,
             "padj": hit[2] if hit else np.nan,
@@ -342,11 +353,48 @@ def clock_gene_panel(deg_by_tp: "dict[str, pd.DataFrame]") -> pd.DataFrame:
     """
     tables = {tp: clock_gene_table(deg) for tp, deg in deg_by_tp.items()}
     first = next(iter(tables.values()))
-    out = first[["role", "role_label", "family", "label"]].copy()
+    out = first[["role", "role_label", "family", "label", "peak_zt"]].copy()
     for tp, t in tables.items():
         out[f"lfc_{tp}"] = t["lfc"].to_numpy()
         out[f"padj_{tp}"] = t["padj"].to_numpy()
     return out
+
+
+def fit_phase_cosine(
+    zt: np.ndarray, y: np.ndarray, period: float = 24.0
+) -> dict:
+    """Least-squares cosine fit of ``y`` against circular phase ``zt``.
+
+    Models ``y ≈ mesor + amplitude·cos(2π(zt − peak_zt)/period)`` by solving
+    the linear system in [1, cos(ωzt), sin(ωzt)]. Used by the phase-vs-log2FC
+    figure to summarise whether regulation is a coherent function of a gene's
+    normal peak phase (this is a fit of the *perturbation effect across genes
+    by their reference phase*, NOT a rhythmicity/time-series fit).
+
+    Returns a dict with mesor, amplitude, peak_zt (phase of maximum, in the
+    same units as ``zt``), r2, and n. Returns NaNs if fewer than 4 finite
+    points are supplied.
+    """
+    zt = np.asarray(zt, dtype=float)
+    y = np.asarray(y, dtype=float)
+    ok = np.isfinite(zt) & np.isfinite(y)
+    zt, y = zt[ok], y[ok]
+    nan = {"mesor": np.nan, "amplitude": np.nan, "peak_zt": np.nan,
+           "r2": np.nan, "n": int(zt.size)}
+    if zt.size < 4:
+        return nan
+    w = 2.0 * np.pi / period
+    X = np.column_stack([np.ones_like(zt), np.cos(w * zt), np.sin(w * zt)])
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    c0, a, b = (float(coef[0]), float(coef[1]), float(coef[2]))
+    amplitude = float(np.hypot(a, b))
+    peak = float((np.arctan2(b, a) / w) % period)
+    pred = X @ coef
+    ss_res = float(np.sum((y - pred) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+    return {"mesor": c0, "amplitude": amplitude, "peak_zt": peak,
+            "r2": r2, "n": int(zt.size)}
 
 
 def is_tf(df: pd.DataFrame) -> pd.Series:
