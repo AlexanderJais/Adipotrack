@@ -20,6 +20,11 @@ def apply_style() -> None:
     mpl.rcParams.update({
         "font.family": "sans-serif",
         "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+        # Render mathtext (used for subscripts like log$_2$) in the regular
+        # body font rather than the italic math font, and avoid Unicode
+        # subscript glyphs that the embedded Arial/type-42 font lacks (they
+        # otherwise render as missing-glyph boxes in the PDF).
+        "mathtext.default": "regular",
         "font.size": 7,
         "axes.titlesize": 8,
         "axes.labelsize": 7,
@@ -59,22 +64,31 @@ def volcano(
     padj_thresh: float = 0.05,
     lfc_thresh: float = 0.0,
     label_top_n: int = 12,
+    x_lim: float | None = None,
 ) -> plt.Figure:
     apply_style()
     d = df.copy()
     d["neglog10padj"] = -np.log10(d["padj"].clip(lower=1e-300))
     sig = (d["padj"] < padj_thresh) & (d["log2FoldChange"].abs() >= lfc_thresh)
 
-    # Axis limits driven by *significant* genes so non-sig outliers don't
-    # collapse the visible range. Non-sig points outside the window are
-    # rendered as off-scale triangles at the boundary.
+    # X-axis: a caller-supplied ``x_lim`` fixes the |log2FC| range so panels
+    # are directly comparable across experiments; genes beyond it are drawn as
+    # off-scale triangles at the boundary (so a single huge outlier doesn't
+    # stretch every panel). When ``x_lim`` is None, fall back to auto-scaling
+    # from the significant genes. The Y-axis (−log10 P) is always per-panel
+    # because significance varies wildly between timepoints.
     if sig.any():
-        x_ref = d.loc[sig, "log2FoldChange"].abs().max()
         y_ref = d.loc[sig, "neglog10padj"].max()
     else:
-        x_ref = d["log2FoldChange"].abs().quantile(0.99)
         y_ref = d["neglog10padj"].quantile(0.99)
-    x_lim = max(float(x_ref) * 1.2, 1.0)
+    if x_lim is None:
+        if sig.any():
+            x_ref = d.loc[sig, "log2FoldChange"].abs().max()
+        else:
+            x_ref = d["log2FoldChange"].abs().quantile(0.99)
+        x_lim = max(float(x_ref) * 1.2, 1.0)
+    else:
+        x_lim = float(x_lim)
     y_lim = max(float(y_ref) * 1.10, -np.log10(padj_thresh) * 1.5)
 
     x_clip = d["log2FoldChange"].clip(-x_lim, x_lim)
@@ -158,8 +172,8 @@ def volcano(
 
     ax.set_xlim(-x_lim, x_lim)
     ax.set_ylim(0, y_lim)
-    ax.set_xlabel("log₂ fold change")
-    ax.set_ylabel("−log₁₀ adjusted P")
+    ax.set_xlabel("log$_2$ fold change")
+    ax.set_ylabel("−log$_{10}$ adjusted P")
     ax.set_title(title)
     fig.tight_layout()
     return fig
@@ -207,8 +221,8 @@ def lfc_scatter(traj: pd.DataFrame) -> plt.Figure:
         ax.text(0.03, 0.97, rho_text, transform=ax.transAxes,
                 ha="left", va="top", fontsize=6)
 
-    ax.set_xlabel("log₂FC at 2 h (CRE+CNO vs CRE+SAL)")
-    ax.set_ylabel("log₂FC at 4 h (CRE+CNO vs CRE+SAL)")
+    ax.set_xlabel("log$_2$FC at 2 h (CRE+CNO vs CRE+SAL)")
+    ax.set_ylabel("log$_2$FC at 4 h (CRE+CNO vs CRE+SAL)")
     ax.set_title(f"Trajectory genes (n = {len(traj)})")
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
     ax.set_aspect("equal")
@@ -336,7 +350,7 @@ def trajectory_lines(
                 # spacing them at a minimum vertical separation.
                 _stack_labels(texts, ax, min_gap=y_lim * 0.06)
 
-    axes[0].set_ylabel("log₂ fold change (CRE+CNO vs CRE+SAL)")
+    axes[0].set_ylabel("log$_2$ fold change (CRE+CNO vs CRE+SAL)")
     fig.tight_layout()
     return fig
 
@@ -388,7 +402,7 @@ def tf_lfc_panel(traj: pd.DataFrame, max_per_class: int = 12) -> plt.Figure:
             fontsize=5,
         )
         ax.axvline(0, color="black", lw=0.4)
-        ax.set_xlabel("log₂FC at 4 h")
+        ax.set_xlabel("log$_2$FC at 4 h")
         ax.set_title(f"{cls.replace('_', ' ')}\n(n = {len(sub)} of {(tfs['class'] == cls).sum()})")
     # Hoisted out of the loop — sharex propagates to all panels in one go.
     axes[0].set_xlim(-x_lim, x_lim)
@@ -458,11 +472,11 @@ def tf_enrichment_dot(enrichment: pd.DataFrame, top_n: int = 15) -> plt.Figure:
     ax.axvline(0, color="black", lw=0.3, ls="--")
     ax.set_yticks(np.arange(len(d)))
     ax.set_yticklabels(d["tf_family"], fontsize=6)
-    ax.set_xlabel("log₂ odds ratio (foreground vs background)")
+    ax.set_xlabel("log$_2$ odds ratio (foreground vs background)")
     ax.set_title(f"TF-family enrichment (top {len(d)})")
 
     cbar = fig.colorbar(sc, ax=ax, fraction=0.04, pad=0.04)
-    cbar.set_label("−log₁₀ q", fontsize=6)
+    cbar.set_label("−log$_{10}$ q", fontsize=6)
     cbar.ax.tick_params(labelsize=5)
     cbar.outline.set_linewidth(0.4)
 
@@ -718,7 +732,7 @@ def heatmap(traj: pd.DataFrame, max_genes: int = 60) -> plt.Figure:
         orientation="horizontal",
         fraction=0.05, pad=0.16, aspect=30, shrink=0.6,
     )
-    cbar.set_label("log₂FC", fontsize=6)
+    cbar.set_label("log$_2$FC", fontsize=6)
     cbar.ax.tick_params(labelsize=5)
     cbar.outline.set_linewidth(0.4)
 

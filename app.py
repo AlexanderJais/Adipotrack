@@ -60,6 +60,13 @@ with st.sidebar:
                                   value=0.05, step=0.01, format="%.4f")
     lfc_thresh = st.number_input("|log₂FC| ≥", min_value=0.0, max_value=5.0,
                                  value=0.0, step=0.25)
+    volcano_xlim = st.number_input(
+        "Volcano |log₂FC| axis limit", min_value=1.0, max_value=30.0,
+        value=8.0, step=1.0,
+        help="Shared x-axis range for every volcano panel so timepoints are "
+             "directly comparable. Genes beyond it are drawn as off-scale "
+             "triangles at the boundary.",
+    )
     st.header("Files")
     f_20m_g = st.file_uploader("20 min — CRE+CNO vs WT+CNO (genetic)", type=["xls", "tsv", "txt"])
     f_20m_v = st.file_uploader("20 min — CRE+CNO vs CRE+SAL (vehicle)", type=["xls", "tsv", "txt"])
@@ -106,14 +113,15 @@ def _qc_for_file(file_bytes: bytes, _cache_key: str,
 @st.cache_data(show_spinner=False, max_entries=32)
 def _volcano_pdf(file_bytes: bytes, _cache_key: str,
                  padj: float, lfc: float,
-                 highlight: tuple[str, ...], title: str) -> bytes:
+                 highlight: tuple[str, ...], title: str,
+                 x_lim: float) -> bytes:
     """Render a volcano panel to PDF bytes. Cached on the panel's inputs so
     download buttons don't re-render on every Streamlit rerun.
     """
     import matplotlib.pyplot as plt
     from io import BytesIO
     df = load_deg(BytesIO(file_bytes))
-    fig = volcano(df, title, set(highlight), padj, lfc)
+    fig = volcano(df, title, set(highlight), padj, lfc, x_lim=x_lim)
     out = fig_to_bytes(fig, "pdf")
     plt.close(fig)
     return out
@@ -229,13 +237,14 @@ with tab_volcano:
     cols = st.columns(2)
     for i, (title, df, fobj) in enumerate(panels):
         fig = volcano(df, title, highlight=highlight_set,
-                      padj_thresh=padj_thresh, lfc_thresh=lfc_thresh)
+                      padj_thresh=padj_thresh, lfc_thresh=lfc_thresh,
+                      x_lim=float(volcano_xlim))
         cols[i % 2].pyplot(fig, use_container_width=True)
         plt.close(fig)
         pdf_bytes = _volcano_pdf(
             fobj.getvalue(), fobj.name,
             float(padj_thresh), float(lfc_thresh),
-            highlight_key, title,
+            highlight_key, title, float(volcano_xlim),
         )
         cols[i % 2].download_button(
             f"Download PDF — {title}", pdf_bytes,
