@@ -397,6 +397,184 @@ def fit_phase_cosine(
             "r2": r2, "n": int(zt.size)}
 
 
+# ---- Clock-arrest evidence -------------------------------------------------
+#
+# These are in-silico analyses that BEAR ON the "clock arrest" hypothesis (the
+# oscillator stalled at a Bmal1-high state) but cannot prove it: a 20 min /
+# 2 h / 4 h perturbation series is far shorter than the ~24 h period, so a
+# sustained displacement is necessary but not sufficient for arrest (it is
+# equally consistent with a phase shift or a damped oscillation). Deciding
+# among those needs a circadian time course / real-time reporter.
+
+_SETTLE_CATEGORIES = ["amplifying", "held", "reverting", "reversed", "unchanged"]
+
+
+def clock_settling_table(
+    panel: pd.DataFrame,
+    early_tp: str,
+    late_tp: str,
+    min_disp: float = 0.25,
+    tol: float = 0.15,
+) -> pd.DataFrame:
+    """Does each clock gene's displacement HOLD across the last interval?
+
+    Compares the log2FC at ``early_tp`` vs ``late_tp`` (columns
+    ``lfc_<tp>`` in a ``clock_gene_panel``). For genes displaced by at least
+    ``min_disp`` at either timepoint, classifies the late-interval behaviour:
+
+      - ``amplifying``  same sign, |late| ≥ (1+tol)·|early|  (still moving out)
+      - ``held``        same sign, within ±tol of |early|     (plateau)
+      - ``reverting``   same sign, |late| ≤ (1−tol)·|early|   (returning to 0)
+      - ``reversed``    sign flipped between the two timepoints
+      - ``unchanged``   |log2FC| < min_disp at both timepoints
+
+    Arrest predicts predominantly ``held``/``amplifying`` (the state persists),
+    especially that repressive-limb targets stay suppressed rather than
+    ``reverting`` upward. Returns per-gene rows with lfc_early, lfc_late, delta,
+    retention (|late|/|early|), and category.
+    """
+    ec, lc = f"lfc_{early_tp}", f"lfc_{late_tp}"
+    d = panel[["label", "family", "role_label", ec, lc]].copy()
+    d = d.rename(columns={ec: "lfc_early", lc: "lfc_late"})
+    e = d["lfc_early"].to_numpy(dtype=float)
+    l = d["lfc_late"].to_numpy(dtype=float)
+    ok = np.isfinite(e) & np.isfinite(l)
+    d = d[ok].reset_index(drop=True)
+    e, l = e[ok], l[ok]
+
+    ae, al = np.abs(e), np.abs(l)
+    disp = np.maximum(ae, al) >= min_disp
+    same_sign = np.sign(e) == np.sign(l)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        retention = np.where(ae > 1e-9, al / ae, np.inf)
+
+    cat = np.full(len(d), "unchanged", dtype=object)
+    displaced = disp
+    rev = displaced & ~same_sign & (ae >= min_disp) & (al >= min_disp)
+    amp = displaced & same_sign & (retention >= 1 + tol)
+    revert = displaced & same_sign & (retention <= 1 - tol)
+    held = displaced & same_sign & ~amp & ~revert
+    cat[rev] = "reversed"
+    cat[amp] = "amplifying"
+    cat[revert] = "reverting"
+    cat[held] = "held"
+
+    d["delta"] = l - e
+    d["retention"] = np.where(np.isfinite(retention), retention, np.nan)
+    d["category"] = pd.Categorical(cat, categories=_SETTLE_CATEGORIES,
+                                   ordered=True)
+    return d
+
+
+def clock_settling_summary(settling: pd.DataFrame) -> dict:
+    """Summarise a ``clock_settling_table``: category counts, the persistence
+    fraction (held+amplifying among displaced genes), and — as the most
+    arrest-relevant readout — the fraction of repressive-limb targets that
+    were down early and STAY suppressed (held/amplifying) rather than
+    reverting.
+    """
+    counts = {c: int((settling["category"] == c).sum())
+              for c in _SETTLE_CATEGORIES}
+    displaced = sum(counts[c] for c in
+                    ("amplifying", "held", "reverting", "reversed"))
+    persist = counts["amplifying"] + counts["held"]
+    persistence = persist / displaced if displaced else float("nan")
+
+    rep = settling[(settling["family"] == "repressive")
+                   & (settling["lfc_early"] < 0)]
+    rep_disp = rep[rep["category"] != "unchanged"]
+    held_down = int(rep_disp["category"].isin(["held", "amplifying"]).sum())
+    target_hold = (held_down / len(rep_disp)) if len(rep_disp) else float("nan")
+    return {
+        "counts": counts,
+        "n_displaced": displaced,
+        "persistence": persistence,
+        "target_hold": target_hold,
+        "n_targets_down": int(len(rep_disp)),
+    }
+
+
+# Curated CONSENSUS direction of core-clock transcripts in torpor / hibernation
+# in peripheral tissue (esp. liver), relative to the euthermic / interbout
+# state. +1 = higher in torpor, −1 = lower / suppressed. Keyed by the display
+# labels in CLOCK_GENES.
+#
+# This is a SIMPLIFIED consensus drawn from a heterogeneous literature —
+# directions vary with species, tissue and torpor depth — and is provided as an
+# EDITABLE reference, not settled ground truth. Basis: Revel et al. 2007 PNAS
+# (Djungarian hamster daily torpor, central + peripheral clock genes); Williams
+# et al. 2012 BMC Genomics (13-lined ground squirrel liver); and reviews of
+# peripheral-clock damping in hibernation. Genes with inconsistent directional
+# reports are deliberately omitted. Edit freely to match your own reference.
+TORPOR_CLOCK_SIGNATURE = {
+    "Bmal1 (Arntl)":    +1,
+    "Npas2":            +1,
+    "Nfil3 (E4bp4)":    +1,
+    "Per1":             -1,
+    "Per2":             -1,
+    "Per3":             -1,
+    "Cry1":             -1,
+    "Rev-erbα (Nr1d1)": -1,
+    "Rev-erbβ (Nr1d2)": -1,
+    "Dec1 (Bhlhe40)":   -1,
+    "Dec2 (Bhlhe41)":   -1,
+    "Dbp":              -1,
+    "Tef":              -1,
+}
+
+TORPOR_SIGNATURE_SOURCE = (
+    "Curated consensus (Revel 2007 PNAS; Williams 2012 BMC Genomics; "
+    "hibernation peripheral-clock reviews) — simplified and editable, not "
+    "settled ground truth."
+)
+
+
+def torpor_concordance(
+    clock_table: pd.DataFrame,
+    signature: "dict[str, int] | None" = None,
+) -> "tuple[pd.DataFrame, dict]":
+    """Test whether our clock-gene log2FC signs match a torpor reference.
+
+    ``clock_table`` is a single-timepoint ``clock_gene_table``. For each gene
+    present in both our data and the reference signature, compares the sign of
+    our log2FC to the reference direction. Returns (per-gene table, summary),
+    where summary has k (concordant), n (compared), frac, and a one-sided
+    binomial p-value against chance (0.5) — NaN if scipy is unavailable.
+    """
+    sig = signature if signature is not None else TORPOR_CLOCK_SIGNATURE
+    rows = []
+    for _, r in clock_table.iterrows():
+        exp = sig.get(r["label"])
+        if exp is None or not r["found"] or not np.isfinite(r["lfc"]):
+            continue
+        obs = int(np.sign(r["lfc"])) if r["lfc"] != 0 else 0
+        rows.append({
+            "label": r["label"],
+            "lfc": float(r["lfc"]),
+            "padj": float(r["padj"]) if np.isfinite(r["padj"]) else np.nan,
+            "expected": int(exp),
+            "observed_sign": obs,
+            "concordant": bool(obs == np.sign(exp)),
+        })
+    per = pd.DataFrame(
+        rows,
+        columns=["label", "lfc", "padj", "expected", "observed_sign",
+                 "concordant"],
+    )
+    n = len(per)
+    k = int(per["concordant"].sum()) if n else 0
+    p = np.nan
+    if n:
+        try:
+            from scipy.stats import binomtest
+            p = float(binomtest(k, n, 0.5, alternative="greater").pvalue)
+        except ImportError:
+            pass
+    summary = {"k": k, "n": n,
+               "frac": (k / n) if n else float("nan"), "p": p}
+    return per, summary
+
+
 def is_tf(df: pd.DataFrame) -> pd.Series:
     """Boolean mask: gene has an annotated TF family (tf_family != '-')."""
     if "tf_family" not in df.columns:

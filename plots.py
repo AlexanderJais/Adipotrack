@@ -1181,3 +1181,130 @@ def clock_phase_heatmap(
     ax.set_title(title)
     fig.tight_layout()
     return fig
+
+
+# ---- Clock-arrest evidence -------------------------------------------------
+
+_SETTLE_FAMILY_ORDER = ["positive", "repressive", "accessory"]
+
+
+def clock_settling(
+    settling: pd.DataFrame,
+    early_tp: str,
+    late_tp: str,
+    title: str = "Does the displaced state hold?",
+) -> plt.Figure:
+    """Scatter of log2FC at ``early_tp`` (x) vs ``late_tp`` (y) for clock genes.
+
+    The dashed identity line is "held" (the displacement is maintained). Points
+    collapsing toward the x-axis are reverting to baseline; points beyond the
+    identity line are still amplifying. Coloured by phase family.
+    """
+    apply_style()
+    d = settling[settling["category"] != "unchanged"].copy()
+    fig, ax = plt.subplots(figsize=(4.0, 3.8))
+    if d.empty:
+        ax.text(0.5, 0.5, "No displaced clock genes", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    x = d["lfc_early"].to_numpy(dtype=float)
+    y = d["lfc_late"].to_numpy(dtype=float)
+    lim = max(float(np.nanmax(np.abs(np.concatenate([x, y])))) * 1.18, 1.0)
+
+    # Reference lines: identity (held), axes (baseline).
+    ax.plot([-lim, lim], [-lim, lim], ls="--", lw=0.6, color="#888888",
+            zorder=1)
+    ax.axhline(0, color="black", lw=0.3, zorder=1)
+    ax.axvline(0, color="black", lw=0.3, zorder=1)
+
+    for fam in _SETTLE_FAMILY_ORDER:
+        sub = d[d["family"] == fam]
+        if sub.empty:
+            continue
+        ax.scatter(sub["lfc_early"], sub["lfc_late"], s=22,
+                   c=CLOCK_FAMILY_COLORS.get(fam, "#999999"),
+                   edgecolor="black", linewidths=0.3, zorder=3,
+                   label={"positive": "positive limb",
+                          "repressive": "repressive / output",
+                          "accessory": "accessory"}[fam])
+    for xi, yi, name in zip(x, y, d["label"]):
+        ax.text(xi + lim * 0.02, yi, name, fontsize=4.5, va="center",
+                ha="left", zorder=5)
+
+    # Zone hints
+    ax.text(0.97, 0.97, "held →", transform=ax.transAxes, fontsize=5,
+            color="#888888", ha="right", va="top", rotation=45)
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_aspect("equal")
+    ax.set_xlabel(f"log$_2$FC at {early_tp}")
+    ax.set_ylabel(f"log$_2$FC at {late_tp}")
+    ax.set_title(title)
+    ax.legend(loc="lower right", fontsize=5)
+    fig.tight_layout()
+    return fig
+
+
+def torpor_concordance_plot(
+    per: pd.DataFrame,
+    summary: dict,
+    source: str = "",
+    title: str = "Torpor clock-signature concordance",
+) -> plt.Figure:
+    """Our clock-gene log2FC vs a torpor reference direction.
+
+    Horizontal bars = our log2FC per reference gene; a caret marks the expected
+    torpor direction; bars are highlighted when our sign matches (concordant).
+    """
+    apply_style()
+    fig, ax = plt.subplots(figsize=(4.2, 0.24 * max(len(per), 1) + 1.2))
+    if per.empty:
+        ax.text(0.5, 0.5, "No genes shared with the torpor reference",
+                ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    d = per.sort_values(["expected", "lfc"], ascending=[False, False])
+    n = len(d)
+    y = np.arange(n)[::-1]
+    lfc = d["lfc"].to_numpy(dtype=float)
+    exp = d["expected"].to_numpy(dtype=int)
+    conc = d["concordant"].to_numpy(dtype=bool)
+    lim = max(float(np.nanmax(np.abs(lfc))) * 1.25, 1.0)
+
+    for yi, val, ok in zip(y, lfc, conc):
+        ax.barh(yi, val, height=0.66,
+                color="#009E73" if ok else "#BBBBBB",
+                edgecolor="none", zorder=2)
+    # Expected torpor direction: caret at the expected side.
+    for yi, e in zip(y, exp):
+        ax.plot(0.90 * lim * np.sign(e), yi,
+                marker=(">" if e > 0 else "<"), ms=5,
+                color="#444444", zorder=3)
+
+    ax.axvline(0, color="black", lw=0.5)
+    ax.set_yticks(y)
+    ax.set_yticklabels(d["label"], fontsize=5.5)
+    ax.set_ylim(-0.7, n - 0.3)
+    ax.set_xlim(-lim, lim)
+    ax.set_xlabel("our log$_2$ fold change")
+    ax.tick_params(left=False)
+
+    k, ntot, frac, p = (summary.get("k"), summary.get("n"),
+                        summary.get("frac"), summary.get("p"))
+    ptxt = f", binomial p = {p:.3g}" if p is not None and np.isfinite(p) else ""
+    ax.set_title(f"{title}\n{k}/{ntot} concordant ({frac:.0%}){ptxt}",
+                 fontsize=7)
+
+    from matplotlib.patches import Patch
+    ax.legend(handles=[
+        Patch(facecolor="#009E73", label="concordant"),
+        Patch(facecolor="#BBBBBB", label="discordant"),
+        plt.Line2D([], [], marker=">", color="#444444", lw=0,
+                   label="expected torpor direction"),
+    ], loc="lower right", fontsize=5, borderpad=0.4)
+    # ``source`` provenance is surfaced by the caller (app caption / README)
+    # rather than drawn here, to avoid colliding with the x-axis label.
+    fig.tight_layout()
+    return fig

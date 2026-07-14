@@ -215,6 +215,34 @@ MetaCycle, cosinor over time, actograms). Those need day-spanning sampling at
 fixed circadian time, which this 20 min / 2 h / 4 h post-stimulus design does
 not provide.
 
+#### Clock-arrest evidence
+
+Two analyses bear on the hypothesis that the oscillator has **stalled at the
+Bmal1-high state** (as peripheral clocks do in torpor / hibernation):
+
+- **Settling dynamics** (`clock_settling_table` / `clock_settling`) — compares
+  each clock gene's log₂FC at the last two timepoints. Genes are classed
+  `held` (plateau on the identity line), `amplifying` (still moving out),
+  `reverting` (returning to baseline), or `reversed`. Arrest predicts the
+  displacement **holds** and that repressive-limb targets **stay suppressed**
+  rather than re-rising (a turning loop would start re-driving them). The tab
+  reports a *persistence* fraction and a *targets-staying-suppressed* fraction.
+- **Torpor concordance** (`torpor_concordance` / `torpor_concordance_plot`) —
+  tests whether our clock-gene log₂FC signs match a curated torpor /
+  hibernation peripheral-clock reference direction (`TORPOR_CLOCK_SIGNATURE`,
+  editable, sourced from Revel 2007 / Williams 2012 and hibernation reviews;
+  the torpor literature is heterogeneous). Reports concordant / total and a
+  one-sided binomial p-value.
+
+**These are necessary, not sufficient.** A 20 min → 4 h window cannot separate
+*arrest* from a *phase shift* or a *damped oscillation* — all three look like a
+sustained displacement. Deciding among them needs a **circadian time course ±
+activation** (24–48 h, analysed with JTK/RAIN/MetaCycle), a **real-time
+PER2::LUC reporter** in explants to watch amplitude damp, a **reversibility**
+test, and **temperature control** (to separate a clock effect from the
+temperature drop of torpor). The tab spells this out in an "Interpretation &
+caveats" box.
+
 Genes absent from a file are reported as "not detected" and left out of the
 bar chart (kept as `NaN` in the table). The clock table downloads separately
 as `clock_genes.xlsx`.
@@ -241,7 +269,7 @@ For each uploaded file the QC tab runs:
 | Trajectories  | LFC-2h-vs-4h scatter (with Spearman ρ) and faceted per-class line plot. When 20 min reference values are present, each line starts at a leading 20 min point (20 m → 2 h → 4 h). The largest-|LFC| genes get an endpoint dot and a leader line to a vertically-spread label, so each label points unambiguously at its trajectory. |
 | Heatmap       | Signed-LFC heatmap of consensus genes, with a leading 20 min column block (20m vs WT / 20m vs SAL) followed by the 2 h and 4 h contrasts, a class swatch on the right, and a horizontal colourbar at the bottom. |
 | TFs           | Per-class TF bars (gene · tf_family) plus the TF-family enrichment dot plot and table. |
-| Circadian     | Core clock panel: antiphase-separation summary, a diverging bar chart of clock-gene log₂FC grouped by TTFL role, a clock-gene trajectory across 20 min → 2 h → 4 h coloured by phase family, and four phase-based views (clock-face dial, phase-vs-log₂FC with cosine fit, TTFL network, phase-ordered heatmap). Contrast + snapshot-timepoint selectors; downloadable clock-gene table. |
+| Circadian     | Core clock panel: antiphase-separation summary, a diverging bar chart of clock-gene log₂FC grouped by TTFL role, a clock-gene trajectory across 20 min → 2 h → 4 h coloured by phase family, four phase-based views (clock-face dial, phase-vs-log₂FC with cosine fit, TTFL network, phase-ordered heatmap), and clock-arrest evidence (settling dynamics + torpor-signature concordance with a caveats box). Contrast + snapshot-timepoint selectors; downloadable clock-gene table. |
 | QC            | Six sub-tabs (one per uploaded file) with PCA and pairwise correlation. |
 | Tables        | Browsable consensus and trajectory tables; bundled XLSX download with consensus_20m, consensus_2h, consensus_4h, trajectories, and (when populated) tf_enrichment sheets. |
 

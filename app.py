@@ -23,6 +23,8 @@ from analysis import (
     add_earlier_reference,
     clock_gene_panel,
     clock_gene_table,
+    clock_settling_summary,
+    clock_settling_table,
     compute_pca,
     consensus_at_timepoint,
     is_tf,
@@ -32,6 +34,8 @@ from analysis import (
     sig_set,
     tf_enrichment,
     to_excel_bytes,
+    torpor_concordance,
+    TORPOR_SIGNATURE_SOURCE,
     trajectories,
 )
 from plots import (
@@ -40,8 +44,10 @@ from plots import (
     clock_network,
     clock_phase_heatmap,
     clock_phase_scatter,
+    clock_settling,
     clock_trajectory,
     fig_to_bytes,
+    torpor_concordance_plot,
     heatmap,
     lfc_scatter,
     pca_scatter,
@@ -457,6 +463,101 @@ with tab_clock:
         file_name="clock_phase_heatmap.pdf",
         mime="application/pdf", key="clock_pheat_pdf",
     )
+
+    # ---- Clock-arrest evidence --------------------------------------------
+    st.divider()
+    st.markdown(
+        "##### Clock-arrest evidence\n"
+        "The *arrest* hypothesis is that the oscillator has stalled at the "
+        "Bmal1-high state. Over this 20 min → 4 h window that predicts a "
+        "**sustained** displacement (the state holds, targets stay suppressed) "
+        "that matches the **torpor** peripheral-clock signature. Both are shown "
+        "below — but note this is *necessary, not sufficient*: a 4 h window "
+        "cannot separate arrest from a phase shift or a damped oscillation "
+        "(see caveats)."
+    )
+
+    tp_keys = list(deg_by_tp.keys())
+    ac1, ac2 = st.columns([1, 1])
+    if len(tp_keys) >= 2:
+        early_tp, late_tp = tp_keys[-2], tp_keys[-1]
+        settle = clock_settling_table(clock_panel, early_tp, late_tp)
+        ssum = clock_settling_summary(settle)
+        s1, s2 = ac1.columns(2)
+        pers = ssum["persistence"]
+        thold = ssum["target_hold"]
+        s1.metric("State persistence",
+                  "n/a" if pers != pers else f"{pers:.0%}",
+                  help="Fraction of displaced clock genes whose displacement "
+                       "holds or deepens from "
+                       f"{early_tp} to {late_tp} (held + amplifying). High = "
+                       "the state is not relaxing back.")
+        s2.metric("Targets staying suppressed",
+                  "n/a" if thold != thold else f"{thold:.0%}",
+                  help=f"Of repressive-limb genes down at {early_tp} "
+                       f"({ssum['n_targets_down']}), the fraction still "
+                       "suppressed (not reverting) — a turning loop would "
+                       "start re-driving them.")
+        f_settle = clock_settling(
+            settle, early_tp, late_tp,
+            title=f"Does the state hold? ({early_tp} vs {late_tp})")
+        ac1.pyplot(f_settle, use_container_width=True)
+        ac1.download_button(
+            "Settling PDF", fig_to_bytes(f_settle, "pdf"),
+            file_name="clock_settling.pdf", mime="application/pdf",
+            key="clock_settle_pdf",
+        )
+    else:
+        ac1.info("Need ≥2 timepoints for the settling analysis.")
+
+    per, csum = torpor_concordance(clock_snap)
+    t1, t2 = ac2.columns(2)
+    t1.metric("Torpor concordance",
+              "n/a" if not csum["n"] else f"{csum['k']}/{csum['n']}",
+              help="Clock genes whose sign matches the torpor reference "
+                   "direction, out of those shared with the reference.")
+    if csum["p"] is not None and csum["p"] == csum["p"]:
+        t2.metric("Binomial p", f"{csum['p']:.3g}",
+                  help="One-sided binomial test that concordance exceeds "
+                       "chance (0.5).")
+    f_torpor = torpor_concordance_plot(
+        per, csum, title=f"Torpor concordance @ {snap_tp}")
+    ac2.pyplot(f_torpor, use_container_width=True)
+    ac2.download_button(
+        "Torpor concordance PDF", fig_to_bytes(f_torpor, "pdf"),
+        file_name="clock_torpor_concordance.pdf", mime="application/pdf",
+        key="clock_torpor_pdf",
+    )
+    ac2.caption("Torpor reference: " + TORPOR_SIGNATURE_SOURCE)
+
+    with st.expander("Interpretation & caveats — what would actually prove arrest"):
+        st.markdown(
+            """
+            **These analyses are necessary, not sufficient.** A sustained,
+            coherent shift toward the Bmal1 phase that matches the torpor
+            signature is *consistent with* clock arrest — but a 20 min / 2 h /
+            4 h perturbation series is far shorter than the ~24 h period, so it
+            cannot distinguish **arrest** (oscillation stopped, pinned
+            Bmal1-high) from a **phase shift** (clock still running, shifted) or
+            a **damped oscillation** (amplitude shrinking). All three look like
+            a sustained displacement here.
+
+            **What would decide it:**
+            1. A **circadian time course ± sustained activation** (every 3–4 h
+               across 24–48 h, ideally in constant darkness) analysed for
+               rhythmicity (JTK_CYCLE / RAIN / MetaCycle). Arrest = loss of
+               significant rhythms with genes pinned Bmal1-high / Per-low.
+            2. **Real-time PER2::LUC bioluminescence** in adipose explants ±
+               activation — directly watch the amplitude damp toward
+               arrhythmicity.
+            3. **Reversibility** — does the clock restart, and at what phase,
+               when drive is removed?
+            4. **Temperature control** — torpor lowers body temperature; test at
+               clamped temperature to separate a clock effect from a
+               temperature effect, alongside organismal correlates (Tᵦ,
+               actogram, metabolic rate).
+            """
+        )
 
     st.subheader(f"Clock gene table ({contrast_short})")
     disp = clock_panel.drop(columns=["role"]).rename(
